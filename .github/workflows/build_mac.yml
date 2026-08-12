@@ -1,0 +1,48 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller pillow
+        
+    - name: Build with Flet
+      run: |
+        # We use flet pack to handle the .app bundle creation nicely
+        # Adding hidden imports known to be needed for librosa/scipy
+        flet pack main.py \
+          --name "DJ_Suite_Pro" \
+          --product-name "DJ Suite Pro" \
+          --product-version "3.2.0" \
+          --copyright "Copyright © 2026" \
+          --hidden-import librosa \
+          --hidden-import scipy \
+          --hidden-import sklearn \
+          --hidden-import numpy \
+          --hidden-import cmath \
+          --verbose
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: DJ_Suite_Pro_macOS
+        path: dist/*.app
+        if-no-files-found: error
