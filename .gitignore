@@ -1,0 +1,46 @@
+# Python Virtual Environments & Cache
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Node.js & Next.js
+node_modules/
+next-app/node_modules/
+next-app/.next/
+next-app/out/
+.pnp
+.pnp.*
+*.tsbuildinfo
+next-env.d.ts
+
+# Downloads, Audio Storage & Temp Files
+storage/downloads/*
+!storage/downloads/.gitkeep
+storage/temp/*
+!storage/temp/.gitkeep
+backend/.temp_downloads/
+backend/.temp_sync/
+*.mp3
+*.m4a
+*.wav
+*.flac
+
+# Sensitive Credentials / YouTube Auth
+headers_auth.json
+backend/headers_auth.json
+.env
+.env*.local
+
+# System & IDE Files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
