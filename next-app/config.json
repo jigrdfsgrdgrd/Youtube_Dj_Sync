@@ -1,0 +1,21 @@
+{
+  "youtube_music": {
+    "playlist_ids": [
+      "PLNGwLo5mTx2F6ReZCU0ED2_yJC8A6ItgJ",
+      "PLNGwLo5mTx2Gh5JMhtrPsDi4b3jERimfR",
+      "PLNGwLo5mTx2GTqKYqe5rFnI7DK8VFiWJp",
+      "PLNGwLo5mTx2GcWSjT-3VoiK9NaTsG33YP",
+      "PLNGwLo5mTx2HbIlbybLhHxc0go-AAnLHv",
+      "PLRcW-uY0ALdQ",
+      "PLA8PWub4Mh_M-P8qYHHl6CjHszQFXJcpr",
+      "PLIY4yDkGdtwY",
+      "PLOIarqz9mwH4"
+    ],
+    "auth_file": "headers_auth.json"
+  },
+  "downloads": {
+    "destination_path": "C:\\Users\\juliu\\Music\\DJ_Downloads",
+    "ffmpeg_path": "",
+    "audio_quality": "320"
+  }
+}

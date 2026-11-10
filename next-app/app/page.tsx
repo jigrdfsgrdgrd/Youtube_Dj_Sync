@@ -1,923 +1,509 @@
-"use client"
+"use client";
 
-import React, { useState, useEffect, useRef } from "react"
-import {
-  Play,
-  Pause,
-  SkipForward,
-  SkipBack,
-  Volume2,
-  VolumeX,
-  Music,
-  Download,
-  RefreshCw,
-  FolderOpen,
-  Settings,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  Disc3,
-  HardDrive,
-  Terminal,
-  Search,
-  ExternalLink,
-  ShieldCheck,
-  Radio,
-} from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { useState, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
+import { Trash2, Play, Pause, SkipBack, SkipForward, Music, Plus, Settings, ChevronDown, ChevronRight, Volume2, VolumeX, RefreshCw } from "lucide-react";
 
-interface Track {
-  id: string
-  title: string
-  artist: string
-  album: string
-  duration: number
-  size_mb: number
-  file_path: string
-  filename: string
-  relative_path: string
-  has_cover: boolean
-  modified: number
-}
+type Track = { name: string; file: string };
+type Playlist = { id: string; title: string; tracks: Track[]; status: string };
+type DlStatus = { status: string; percentage: number; eta: string; videoCurrent?: number; videoTotal?: number; playlistCurrent?: number; playlistTotal?: number };
 
-interface SyncStatus {
-  status: "idle" | "running" | "cancelling" | "completed" | "error" | "cancelled"
-  active_playlist: string
-  current_index: number
-  total_tracks: number
-  percent: number
-  current_track: string
-  success_count: number
-  skipped_count: number
-  failed_count: number
-  error: string | null
-  logs: string[]
-}
+export default function SyncTool() {
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [newUrl, setNewUrl] = useState('');
+  
+  // Audio state
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [progress, setProgress] = useState([0]); // percentage
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState([80]);
+  const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
+  const [currentPlaylistCtx, setCurrentPlaylistCtx] = useState<Playlist | null>(null);
+  const [expandedPlaylist, setExpandedPlaylist] = useState<string | null>(null);
+  const [dlStatus, setDlStatus] = useState<DlStatus>({ status: 'idle', percentage: 0, eta: '' });
+  const [destPath, setDestPath] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [showVolume, setShowVolume] = useState(false);
 
-export default function DJSyncDashboard() {
-  // Backend & Connection State
-  const [backendOnline, setBackendOnline] = useState<boolean>(false)
-  const [resolvedDest, setResolvedDest] = useState<string>("")
-  const [showSettings, setShowSettings] = useState<boolean>(false)
-  const [customDestInput, setCustomDestInput] = useState<string>("")
-
-  // Sync Form State
-  const [playlistInput, setPlaylistInput] = useState<string>("")
-  const [quality, setQuality] = useState<string>("320")
-  const [isStartingSync, setIsStartingSync] = useState<boolean>(false)
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
-    status: "idle",
-    active_playlist: "",
-    current_index: 0,
-    total_tracks: 0,
-    percent: 0,
-    current_track: "",
-    success_count: 0,
-    skipped_count: 0,
-    failed_count: 0,
-    error: null,
-    logs: [],
-  })
-  const [showLogs, setShowLogs] = useState<boolean>(true)
-
-  // Track Library State
-  const [tracks, setTracks] = useState<Track[]>([])
-  const [isLoadingTracks, setIsLoadingTracks] = useState<boolean>(false)
-  const [searchFilter, setSearchFilter] = useState<string>("")
-
-  // Audio Player State
-  const [currentTrack, setCurrentTrack] = useState<Track | null>(null)
-  const [isPlaying, setIsPlaying] = useState<boolean>(false)
-  const [currentTime, setCurrentTime] = useState<number>(0)
-  const [duration, setDuration] = useState<number>(0)
-  const [volume, setVolume] = useState<number>(0.85)
-  const [isMuted, setIsMuted] = useState<boolean>(false)
-
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const logEndRef = useRef<HTMLDivElement | null>(null)
-
-  // 1. Health & Initial Load
-  const checkHealth = async () => {
+  // Load configuration
+  const loadConfig = async () => {
     try {
-      const res = await fetch("/api/health")
-      if (res.ok) {
-        setBackendOnline(true)
-        return true
-      }
-    } catch {
-      setBackendOnline(false)
+      const res = await fetch('/api/config');
+      const data = await res.json();
+      if (data.path) setDestPath(data.path);
+    } catch (error) {
+      console.error('Failed to load config:', error);
     }
-    return false
-  }
+  };
 
-  const fetchConfig = async () => {
+  const saveConfig = async () => {
     try {
-      const res = await fetch("/api/config")
-      if (res.ok) {
-        const data = await res.json()
-        setResolvedDest(data.resolved_destination || "")
-        setCustomDestInput(data.config?.downloads?.destination_path || "")
-        if (data.config?.downloads?.audio_quality) {
-          setQuality(data.config.downloads.audio_quality)
-        }
-      }
-    } catch (e) {
-      console.error("Config fetch error:", e)
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: destPath })
+      });
+    } catch (error) {
+      console.error('Failed to save config:', error);
     }
-  }
+  };
 
-  const fetchTracks = async () => {
-    setIsLoadingTracks(true)
+  // Load library
+  const loadLibrary = async () => {
     try {
-      const res = await fetch("/api/tracks")
-      if (res.ok) {
-        const data = await res.json()
-        setTracks(data.tracks || [])
-      }
-    } catch (e) {
-      console.error("Track fetch error:", e)
-    } finally {
-      setIsLoadingTracks(false)
+      const res = await fetch('/api/library');
+      const data = await res.json();
+      if (data.playlists) setPlaylists(data.playlists);
+    } catch (error) {
+      console.error('Failed to load library:', error);
     }
-  }
+  };
+
+  const pollStatus = async () => {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      setDlStatus(data);
+    } catch (error) {
+      // ignore
+    }
+  };
 
   useEffect(() => {
-    checkHealth()
-    fetchConfig()
-    fetchTracks()
+    loadConfig();
+    loadLibrary();
+    pollStatus();
+    
+    // Poll library every 5 seconds
+    const libInterval = setInterval(loadLibrary, 5000);
+    // Poll status every 1 second
+    const statusInterval = setInterval(pollStatus, 1000);
+    
+    return () => {
+      clearInterval(libInterval);
+      clearInterval(statusInterval);
+    };
+  }, []);
 
-    const healthInterval = setInterval(checkHealth, 5000)
-    return () => clearInterval(healthInterval)
-  }, [])
-
-  // 2. Poll Sync Status
+  // Audio initialization
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null
+    const audio = new Audio();
+    audioRef.current = audio;
 
-    const pollStatus = async () => {
-      try {
-        const res = await fetch("/api/status")
-        if (res.ok) {
-          const data: SyncStatus = await res.json()
-          setSyncStatus(data)
-
-          // Wenn der Sync abgeschlossen ist, lade Tracks neu
-          if (data.status === "completed" && syncStatus.status === "running") {
-            fetchTracks()
-          }
-        }
-      } catch (e) {
-        console.error("Status polling error:", e)
+    const updateTime = () => {
+      setCurrentTime(audio.currentTime);
+      if (audio.duration && !isScrubbing) {
+        setProgress([(audio.currentTime / audio.duration) * 100]);
       }
-    }
+    };
+    
+    const updateDuration = () => setDuration(audio.duration);
+    const onEnded = () => handleSkip(1); // Auto play next track
 
-    if (syncStatus.status === "running" || syncStatus.status === "cancelling") {
-      interval = setInterval(pollStatus, 1000)
-    } else {
-      pollStatus()
-    }
+    audio.addEventListener('timeupdate', updateTime);
+    audio.addEventListener('loadedmetadata', updateDuration);
+    audio.addEventListener('ended', onEnded);
 
     return () => {
-      if (interval) clearInterval(interval)
-    }
-  }, [syncStatus.status])
+      audio.removeEventListener('timeupdate', updateTime);
+      audio.removeEventListener('loadedmetadata', updateDuration);
+      audio.removeEventListener('ended', onEnded);
+      audio.pause();
+    };
+  }, [isScrubbing]); // Re-bind when scrubbing state changes to prevent jumps
 
-  // Scroll to bottom of logs
+  // Set initial volume
   useEffect(() => {
-    if (logEndRef.current && showLogs) {
-      logEndRef.current.scrollIntoView({ behavior: "smooth" })
+    if (audioRef.current) {
+      audioRef.current.volume = volume[0] / 100;
     }
-  }, [syncStatus.logs, showLogs])
+  }, []);
 
-  // 3. Audio Player Events
+  // Playback control
   useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-
-    const handleTimeUpdate = () => setCurrentTime(audio.currentTime)
-    const handleLoadedMetadata = () => setDuration(audio.duration || 0)
-    const handleEnded = () => playNextTrack()
-    const handlePlay = () => setIsPlaying(true)
-    const handlePause = () => setIsPlaying(false)
-
-    audio.addEventListener("timeupdate", handleTimeUpdate)
-    audio.addEventListener("loadedmetadata", handleLoadedMetadata)
-    audio.addEventListener("ended", handleEnded)
-    audio.addEventListener("play", handlePlay)
-    audio.addEventListener("pause", handlePause)
-
-    return () => {
-      audio.removeEventListener("timeupdate", handleTimeUpdate)
-      audio.removeEventListener("loadedmetadata", handleLoadedMetadata)
-      audio.removeEventListener("ended", handleEnded)
-      audio.removeEventListener("play", handlePlay)
-      audio.removeEventListener("pause", handlePause)
+    if (audioRef.current && currentTrack) {
+      setProgress([0]);
+      setCurrentTime(0);
+      audioRef.current.src = `/api/stream?file=${encodeURIComponent(currentTrack.file)}`;
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(console.error);
     }
-  }, [currentTrack, tracks])
+  }, [currentTrack]);
 
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.volume = isMuted ? 0 : volume
-    }
-  }, [volume, isMuted])
-
-  const loadTrack = (track: Track, autoPlay: boolean = true) => {
-    setCurrentTrack(track)
-    if (audioRef.current) {
-      audioRef.current.src = `/api/audio/${track.id}`
-      audioRef.current.load()
-      if (autoPlay) {
-        audioRef.current
-          .play()
-          .then(() => setIsPlaying(true))
-          .catch((err) => console.log("Autoplay blocked/failed:", err))
-      }
-    }
-  }
-
-  const togglePlayPause = () => {
-    if (!audioRef.current || !currentTrack) return
-    if (isPlaying) {
-      audioRef.current.pause()
-    } else {
-      audioRef.current.play().catch(console.error)
-    }
-  }
-
-  const playNextTrack = () => {
-    if (!currentTrack || tracks.length === 0) return
-    const currentIndex = tracks.findIndex((t) => t.id === currentTrack.id)
-    const nextIndex = (currentIndex + 1) % tracks.length
-    loadTrack(tracks[nextIndex], true)
-  }
-
-  const playPrevTrack = () => {
-    if (!currentTrack || tracks.length === 0) return
-    const currentIndex = tracks.findIndex((t) => t.id === currentTrack.id)
-    const prevIndex = (currentIndex - 1 + tracks.length) % tracks.length
-    loadTrack(tracks[prevIndex], true)
-  }
-
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const time = parseFloat(e.target.value)
-    setCurrentTime(time)
-    if (audioRef.current) {
-      audioRef.current.currentTime = time
-    }
-  }
-
-  // 4. Start & Cancel Sync
-  const handleStartSync = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!playlistInput.trim()) return
-
-    setIsStartingSync(true)
-    try {
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          playlist_url_or_id: playlistInput.trim(),
-          quality: quality,
-          destination_path: customDestInput.trim() || undefined,
-        }),
-      })
-
-      if (res.ok) {
-        setPlaylistInput("")
-        // Trigger status poll sofort
-        const statusRes = await fetch("/api/status")
-        if (statusRes.ok) {
-          setSyncStatus(await statusRes.json())
-        }
+      if (isPlaying) {
+        audioRef.current.play().catch(() => setIsPlaying(false));
       } else {
-        const errorData = await res.json()
-        alert(`Fehler beim Starten: ${errorData.detail || "Unbekannter Fehler"}`)
+        audioRef.current.pause();
       }
-    } catch (e) {
-      alert(`Netzwerkfehler: Backend nicht erreichbar.`)
+    }
+  }, [isPlaying]);
+
+  const handleSliderChange = (val: any) => {
+    const numericVal = Array.isArray(val) ? val[0] : val;
+    setIsScrubbing(true);
+    setProgress([numericVal]);
+    if (audioRef.current && duration) {
+      const newTime = (numericVal / 100) * duration;
+      audioRef.current.currentTime = newTime;
+      setCurrentTime(newTime);
+    }
+  };
+
+  const handleSliderCommit = () => {
+    setIsScrubbing(false);
+  };
+
+  const handleVolumeChange = (val: any) => {
+    const numericVal = Array.isArray(val) ? val[0] : val;
+    setVolume([numericVal]);
+    
+    if (audioRef.current) {
+      audioRef.current.volume = numericVal / 100;
+    }
+  };
+
+  const handleSkip = (direction: number) => {
+    if (!currentPlaylistCtx || !currentTrack) return;
+    const tracks = currentPlaylistCtx.tracks;
+    const currentIndex = tracks.findIndex(t => t.file === currentTrack.file);
+    if (currentIndex === -1) return;
+    
+    let nextIndex = currentIndex + direction;
+    if (nextIndex >= tracks.length) nextIndex = 0; // Loop to start
+    if (nextIndex < 0) nextIndex = tracks.length - 1; // Loop to end
+    
+    setCurrentTrack(tracks[nextIndex]);
+  };
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUrl.trim()) return;
+    
+    const urlToDownload = newUrl;
+    setNewUrl('');
+    
+    try {
+      const res = await fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: urlToDownload })
+      });
+      if (!res.ok) console.error('Failed to start download');
+    } catch (err) {
+      console.error('Error:', err);
+    }
+  };
+
+  const handleSyncAll = async () => {
+    try {
+      const res = await fetch('/api/sync-all', { method: 'POST' });
+      if (!res.ok) console.error('Failed to start bulk sync');
+    } catch (err) {
+      console.error('Error starting sync:', err);
+    }
+  };
+
+  const [isPatchingTraktor, setIsPatchingTraktor] = useState(false);
+  const [traktorPatchResult, setTraktorPatchResult] = useState<{success?: boolean, message?: string} | null>(null);
+
+  const handleTraktorPatch = async () => {
+    setIsPatchingTraktor(true);
+    setTraktorPatchResult(null);
+    try {
+      const res = await fetch('/api/traktor-patch', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setTraktorPatchResult({ success: false, message: data.error || 'Ein Fehler ist aufgetreten.' });
+      } else {
+        setTraktorPatchResult({ success: true, message: data.message });
+      }
+    } catch (err: any) {
+      setTraktorPatchResult({ success: false, message: 'Verbindungsfehler zur API.' });
     } finally {
-      setIsStartingSync(false)
+      setIsPatchingTraktor(false);
     }
-  }
+  };
 
-  const handleCancelSync = async () => {
-    try {
-      await fetch("/api/cancel", { method: "POST" })
-    } catch (e) {
-      console.error("Cancel error:", e)
-    }
-  }
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds)) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
-  const handleSaveSettings = async () => {
-    try {
-      const res = await fetch("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          destination_path: customDestInput.trim(),
-          audio_quality: quality,
-        }),
-      })
-      if (res.ok) {
-        setShowSettings(false)
-        fetchConfig()
-        fetchTracks()
-      }
-    } catch (e) {
-      alert("Fehler beim Speichern der Einstellungen.")
-    }
-  }
-
-  const formatTime = (secs: number) => {
-    if (!secs || isNaN(secs)) return "0:00"
-    const m = Math.floor(secs / 60)
-    const s = Math.floor(secs % 60)
-    return `${m}:${s < 10 ? "0" : ""}${s}`
-  }
-
-  // Filtered tracks
-  const filteredTracks = tracks.filter((t) => {
-    const q = searchFilter.toLowerCase()
-    return (
-      t.title.toLowerCase().includes(q) ||
-      t.artist.toLowerCase().includes(q) ||
-      t.album.toLowerCase().includes(q)
-    )
-  })
-
-  const isSyncActive = syncStatus.status === "running" || syncStatus.status === "cancelling"
+  const getGradient = (title: string) => {
+    // Generate a very subtle monochrome gradient based on title length
+    const val1 = 12 + (title.length % 5);
+    const val2 = 6 + (title.length % 3);
+    return `linear-gradient(135deg, hsl(0, 0%, ${val1}%), hsl(0, 0%, ${val2}%))`;
+  };
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100 selection:bg-cyan-500 selection:text-black">
-      {/* Hidden Audio Element */}
-      <audio ref={audioRef} preload="auto" />
-
-      {/* Top Navigation */}
-      <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-500 via-indigo-500 to-fuchsia-500 shadow-lg shadow-cyan-500/20">
-              <Disc3 className="h-6 w-6 animate-[spin_6s_linear_infinite] text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold tracking-tight text-white sm:text-xl">
-                  YOUTUBE <span className="text-cyan-400">DJ SYNC</span>
-                </h1>
-                <span className="rounded-full bg-cyan-950 px-2 py-0.5 text-xs font-semibold text-cyan-300 ring-1 ring-cyan-800">
-                  v2.0
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                High-Quality Playlist Sync, ID3 Tagging & Built-in Player
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {/* Backend Status Pill */}
-            <div
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
-                backendOnline
-                  ? "bg-emerald-950/60 text-emerald-400 ring-1 ring-emerald-700/50"
-                  : "bg-rose-950/60 text-rose-400 ring-1 ring-rose-700/50"
-              }`}
-            >
-              <div
-                className={`h-2 w-2 rounded-full ${
-                  backendOnline ? "animate-pulse bg-emerald-400" : "bg-rose-500"
-                }`}
-              />
-              {backendOnline ? "Backend Online" : "Backend Offline"}
-            </div>
-
-            {/* Settings Trigger */}
-            <Button
-              variant="outline"
-              size="sm"
+    <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-zinc-800 pb-40">
+      <main className="max-w-5xl mx-auto pt-24 px-6 md:px-8 space-y-16">
+        
+        {/* Header */}
+        <header className="flex flex-col items-center justify-center text-center space-y-3 max-w-2xl mx-auto">
+          <div className="flex flex-col items-center gap-2 relative w-full">
+            <h1 className="text-3xl font-bold tracking-tight mt-4">DJ Local Sync</h1>
+            <p className="text-zinc-500 text-sm max-w-sm mx-auto">
+              Sync YouTube Playlists directly to your local drive.
+            </p>
+            
+            <Button 
+              variant="ghost" 
+              size="icon" 
               onClick={() => setShowSettings(!showSettings)}
-              className="border-slate-800 bg-slate-900/60 text-slate-300 hover:bg-slate-800 hover:text-white"
+              className="absolute right-0 top-0 text-zinc-500 hover:text-zinc-100"
             >
-              <Settings className="h-4 w-4" />
-              <span className="hidden sm:inline">Settings</span>
+              <Settings className="w-5 h-5" />
             </Button>
           </div>
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 p-4 pb-32 sm:p-6">
-        {/* Settings Panel (collapsible) */}
-        {showSettings && (
-          <Card className="border-cyan-900/40 bg-slate-900/90 p-5 shadow-2xl backdrop-blur-xl">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <FolderOpen className="h-5 w-5 text-cyan-400" />
-                <h3 className="font-semibold text-white">Speicherort & Einstellungen</h3>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowSettings(false)}
-                className="text-slate-400 hover:text-white"
-              >
-                ✕
-              </Button>
+          
+          {showSettings && (
+            <div className="w-full bg-zinc-900/50 border border-zinc-800/80 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 text-left mt-4">
+              <label className="text-[10px] font-medium text-zinc-500 uppercase tracking-widest ml-1 mb-2 block">Local Destination Path</label>
+              <Input 
+                placeholder="C:\Users\...\Music\DJ_Downloads" 
+                value={destPath} 
+                onChange={e => setDestPath(e.target.value)} 
+                onBlur={saveConfig}
+                className="h-10 bg-zinc-900 border-zinc-800 text-zinc-300 focus-visible:ring-zinc-700 rounded-lg px-4 w-full shadow-sm text-sm font-mono"
+              />
             </div>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="text-xs font-medium text-slate-400">
-                  Zielverzeichnis für Downloads:
-                </label>
-                <Input
-                  value={customDestInput}
-                  onChange={(e) => setCustomDestInput(e.target.value)}
-                  placeholder="z.B. ../storage/downloads oder Z:\Musik\DJ_Downloads"
-                  className="mt-1.5 border-slate-700 bg-slate-950 text-slate-200"
-                />
-                <p className="mt-1 text-[11px] text-slate-500">
-                  Aktuell aufgelöst: <span className="font-mono text-slate-400">{resolvedDest}</span>
-                </p>
-              </div>
+          )}
+        </header>
 
-              <div>
-                <label className="text-xs font-medium text-slate-400">
-                  Standard Audio-Qualität:
-                </label>
-                <div className="mt-1.5 flex gap-2">
-                  {["320", "256", "192"].map((q) => (
-                    <button
-                      key={q}
-                      type="button"
-                      onClick={() => setQuality(q)}
-                      className={`flex-1 rounded-lg border py-2 text-xs font-medium transition-all ${
-                        quality === q
-                          ? "border-cyan-500 bg-cyan-950/60 text-cyan-300 ring-1 ring-cyan-500"
-                          : "border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700"
-                      }`}
-                    >
-                      {q} kbps MP3
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
+        {/* Input Section & Progress */}
+        <section className="space-y-4 max-w-2xl mx-auto w-full pt-4">
+          <form onSubmit={handleAdd} className="flex flex-col sm:flex-row gap-3">
+            <Input 
+              placeholder="Paste YouTube Playlist URL..." 
+              value={newUrl} 
+              onChange={e => setNewUrl(e.target.value)} 
+              className="h-12 bg-zinc-900/50 border-zinc-800/80 text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-zinc-700 focus-visible:ring-1 rounded-xl px-4 flex-1 shadow-sm transition-all"
+            />
+            <Button 
+              type="submit" 
+              className="h-12 bg-zinc-100 text-zinc-900 hover:bg-zinc-300 font-medium px-8 rounded-xl transition-colors shadow-sm"
+              disabled={dlStatus.status === 'downloading'}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Download
+            </Button>
+          </form>
+          
 
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowSettings(false)}
-                className="border-slate-800"
-              >
-                Abbrechen
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSaveSettings}
-                className="bg-cyan-600 text-white hover:bg-cyan-500"
-              >
-                Einstellungen speichern
-              </Button>
-            </div>
-          </Card>
-        )}
 
-        {/* Sync Cockpit Banner */}
-        <div className="relative overflow-hidden rounded-2xl border border-slate-800/80 bg-gradient-to-br from-slate-900 via-slate-900/90 to-indigo-950/40 p-6 shadow-xl">
-          <div className="absolute right-0 top-0 -mr-16 -mt-16 h-64 w-64 rounded-full bg-cyan-500/10 blur-3xl" />
-          <div className="relative z-10 flex flex-col gap-5">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <span className="flex h-6 items-center gap-1.5 rounded-full bg-cyan-950/70 px-2.5 text-[11px] font-semibold text-cyan-400 ring-1 ring-cyan-800/60">
-                  <ShieldCheck className="h-3.5 w-3.5" /> Hotcue-Schutz Aktiv
+          {/* Live Progress Bar */}
+          {dlStatus.status === 'downloading' && (
+            <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-xl p-4 overflow-hidden animate-in fade-in slide-in-from-top-2">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs font-medium text-green-400 flex items-center">
+                  <RefreshCw className="w-3 h-3 mr-1.5 animate-spin" />
+                  Downloading...
                 </span>
-                <span className="flex h-6 items-center gap-1.5 rounded-full bg-indigo-950/70 px-2.5 text-[11px] font-semibold text-indigo-400 ring-1 ring-indigo-800/60">
-                  <HardDrive className="h-3.5 w-3.5" /> ID3 Tag & Cover Auto-Embed
+                <span className="text-xs text-zinc-400 font-mono">
+                  {dlStatus.playlistTotal && dlStatus.playlistTotal > 0 ? `Playlist ${dlStatus.playlistCurrent || 1}/${dlStatus.playlistTotal} - ` : ''}
+                  {dlStatus.videoTotal && dlStatus.videoTotal > 0 ? `Song ${dlStatus.videoCurrent}/${dlStatus.videoTotal} - ` : ''}
+                  {dlStatus.eta ? `ETA: ${dlStatus.eta}` : 'Calculating...'}
                 </span>
               </div>
-              <h2 className="text-xl font-bold text-white sm:text-2xl">
-                YouTube & YouTube Music Playlist synchronisieren
-              </h2>
-              <p className="text-sm text-slate-400">
-                Füge den Link oder die ID einer YouTube/YouTube Music Playlist ein. Bereits
-                vorhandene Songs werden übersprungen und Hotcues geschützt.
-              </p>
-            </div>
-
-            <form onSubmit={handleStartSync} className="flex flex-col gap-3 sm:flex-row">
-              <div className="relative flex-1">
-                <Input
-                  value={playlistInput}
-                  onChange={(e) => setPlaylistInput(e.target.value)}
-                  placeholder="https://music.youtube.com/playlist?list=... oder YouTube Playlist URL/ID"
-                  disabled={isSyncActive || isStartingSync}
-                  className="h-12 border-slate-700/80 bg-slate-950/90 pr-10 text-base text-slate-100 placeholder:text-slate-500 focus-visible:ring-cyan-500"
+              <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                <div 
+                  className="bg-green-500 h-1.5 rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${Math.max(2, dlStatus.percentage)}%` }}
                 />
-              </div>
-
-              {/* Quality selector */}
-              <div className="flex rounded-xl border border-slate-800 bg-slate-950/80 p-1">
-                {["320", "256", "192"].map((q) => (
-                  <button
-                    key={q}
-                    type="button"
-                    onClick={() => setQuality(q)}
-                    disabled={isSyncActive}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
-                      quality === q
-                        ? "bg-cyan-500 text-slate-950 shadow-md"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    {q}k
-                  </button>
-                ))}
-              </div>
-
-              {/* Action Buttons */}
-              {isSyncActive ? (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={handleCancelSync}
-                  className="h-12 px-6 font-semibold"
-                >
-                  <AlertCircle className="mr-2 h-4 w-4" />
-                  Abbrechen
-                </Button>
-              ) : (
-                <Button
-                  type="submit"
-                  disabled={!playlistInput.trim() || isStartingSync || !backendOnline}
-                  className="h-12 bg-gradient-to-r from-cyan-500 to-indigo-600 px-7 font-semibold text-white shadow-lg shadow-cyan-500/25 transition-all hover:opacity-95 disabled:opacity-50"
-                >
-                  {isStartingSync ? (
-                    <>
-                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                      Wird vorbereitet...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="mr-2 h-5 w-5" />
-                      Sync starten
-                    </>
-                  )}
-                </Button>
-              )}
-            </form>
-          </div>
-        </div>
-
-        {/* Live Progress & Log Terminal (Visible when syncing or after sync) */}
-        {(isSyncActive || syncStatus.logs.length > 0) && (
-          <Card className="border-slate-800 bg-slate-900/80 p-5 shadow-xl">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-              <div className="flex items-center gap-2.5">
-                {isSyncActive ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-cyan-400" />
-                ) : syncStatus.status === "completed" ? (
-                  <CheckCircle2 className="h-5 w-5 text-emerald-400" />
-                ) : (
-                  <AlertCircle className="h-5 w-5 text-amber-400" />
-                )}
-                <div>
-                  <h3 className="font-semibold text-white">
-                    {syncStatus.active_playlist
-                      ? `Playlist: ${syncStatus.active_playlist}`
-                      : "Download Status"}
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    {syncStatus.current_track || "Warten auf nächste Aktion..."}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-3 text-xs font-medium">
-                  <span className="text-emerald-400">Neu: {syncStatus.success_count}</span>
-                  <span className="text-cyan-400">Übersprungen: {syncStatus.skipped_count}</span>
-                  {syncStatus.failed_count > 0 && (
-                    <span className="text-rose-400">Fehler: {syncStatus.failed_count}</span>
-                  )}
-                </div>
-
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowLogs(!showLogs)}
-                  className="h-8 border border-slate-800 text-xs text-slate-400 hover:text-white"
-                >
-                  <Terminal className="mr-1.5 h-3.5 w-3.5" />
-                  {showLogs ? "Log verbergen" : "Log anzeigen"}
-                </Button>
-              </div>
-            </div>
-
-            {/* Progress Bar */}
-            <div className="mt-4">
-              <div className="flex justify-between text-xs font-semibold text-slate-300">
-                <span>
-                  Fortschritt ({syncStatus.current_index} / {syncStatus.total_tracks} Tracks)
-                </span>
-                <span className="text-cyan-400">{syncStatus.percent}%</span>
-              </div>
-              <div className="mt-1.5 h-2.5 w-full overflow-hidden rounded-full bg-slate-950 ring-1 ring-slate-800">
-                <div
-                  className="h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 transition-all duration-300"
-                  style={{ width: `${syncStatus.percent}%` }}
-                />
-              </div>
-            </div>
-
-            {/* Console Log Window */}
-            {showLogs && (
-              <div className="mt-4 max-h-48 overflow-y-auto rounded-xl border border-slate-950 bg-black/60 p-3 font-mono text-[11px] text-slate-300 shadow-inner">
-                {syncStatus.logs.map((log, i) => (
-                  <div key={i} className="py-0.5 leading-relaxed">
-                    <span className="text-slate-500">{log.substring(0, 10)}</span>
-                    <span
-                      className={
-                        log.includes("FEHLER") || log.includes("Fehler")
-                          ? "text-rose-400"
-                          : log.includes("Hotcue") || log.includes("Überspringe")
-                          ? "text-cyan-300"
-                          : log.includes("Erfolgreich") || log.includes("Fertig")
-                          ? "text-emerald-300"
-                          : "text-slate-200"
-                      }
-                    >
-                      {log.substring(10)}
-                    </span>
-                  </div>
-                ))}
-                <div ref={logEndRef} />
-              </div>
-            )}
-          </Card>
-        )}
-
-        {/* DJ Track Library Section */}
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-            <div>
-              <h2 className="text-lg font-bold text-white sm:text-xl">
-                Lokale DJ-Bibliothek ({tracks.length} Songs)
-              </h2>
-              <p className="text-xs text-slate-400">
-                Alle Titel im Zielordner stehen zum Sofort-Abspielen bereit.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="relative w-full sm:w-64">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
-                <Input
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                  placeholder="Songs & Artists durchsuchen..."
-                  className="h-9 border-slate-800 bg-slate-900/90 pl-9 text-xs text-slate-200 placeholder:text-slate-500"
-                />
-              </div>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={fetchTracks}
-                disabled={isLoadingTracks}
-                className="h-9 border-slate-800 bg-slate-900/60 text-slate-300 hover:text-white"
-              >
-                <RefreshCw className={`h-4 w-4 ${isLoadingTracks ? "animate-spin" : ""}`} />
-              </Button>
-            </div>
-          </div>
-
-          {/* Track Table / List */}
-          {filteredTracks.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 py-16 text-center">
-              <Music className="h-12 w-12 text-slate-600" />
-              <h3 className="mt-3 text-sm font-semibold text-slate-300">
-                {tracks.length === 0
-                  ? "Noch keine Songs heruntergeladen"
-                  : "Keine Tracks gefunden"}
-              </h3>
-              <p className="mt-1 text-xs text-slate-500">
-                {tracks.length === 0
-                  ? "Füge oben einen YouTube-Playlist-Link ein und klicke auf 'Sync starten'."
-                  : "Überprüfe deinen Suchbegriff."}
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 shadow-xl">
-              <div className="divide-y divide-slate-800/60">
-                {filteredTracks.map((track) => {
-                  const isCurrent = currentTrack?.id === track.id
-                  return (
-                    <div
-                      key={track.id}
-                      onClick={() => loadTrack(track, true)}
-                      className={`group flex cursor-pointer items-center justify-between gap-4 px-4 py-3 transition-colors ${
-                        isCurrent
-                          ? "bg-cyan-950/40 text-cyan-200"
-                          : "hover:bg-slate-800/50 text-slate-200"
-                      }`}
-                    >
-                      {/* Left: Thumbnail & Song Info */}
-                      <div className="flex min-w-0 items-center gap-3.5">
-                        <div className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-800 ring-1 ring-slate-700/60">
-                          {track.has_cover ? (
-                            <img
-                              src={`/api/cover/${track.id}`}
-                              alt={track.title}
-                              className="h-full w-full object-cover"
-                              onError={(e) => {
-                                ;(e.target as HTMLElement).style.display = "none"
-                              }}
-                            />
-                          ) : (
-                            <Music className="h-5 w-5 text-slate-500" />
-                          )}
-                          {/* Play overlay icon */}
-                          <div
-                            className={`absolute inset-0 flex items-center justify-center bg-black/50 transition-opacity ${
-                              isCurrent ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                            }`}
-                          >
-                            {isCurrent && isPlaying ? (
-                              <Pause className="h-5 w-5 text-cyan-400" />
-                            ) : (
-                              <Play className="h-5 w-5 text-white" />
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="min-w-0">
-                          <h4
-                            className={`truncate text-sm font-semibold ${
-                              isCurrent ? "text-cyan-400" : "text-white"
-                            }`}
-                          >
-                            {track.title}
-                          </h4>
-                          <p className="truncate text-xs text-slate-400">
-                            {track.artist} •{" "}
-                            <span className="text-slate-500">{track.album}</span>
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* Right: Duration, Size & Badge */}
-                      <div className="flex shrink-0 items-center gap-4 text-xs text-slate-400">
-                        <span className="hidden font-mono sm:inline">
-                          {formatTime(track.duration)}
-                        </span>
-                        <span className="hidden font-mono sm:inline text-slate-500">
-                          {track.size_mb} MB
-                        </span>
-
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            if (isCurrent) {
-                              togglePlayPause()
-                            } else {
-                              loadTrack(track, true)
-                            }
-                          }}
-                          className={`h-8 w-8 rounded-full p-0 ${
-                            isCurrent
-                              ? "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
-                              : "text-slate-400 hover:bg-slate-700 hover:text-white"
-                          }`}
-                        >
-                          {isCurrent && isPlaying ? (
-                            <Pause className="h-4 w-4" />
-                          ) : (
-                            <Play className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </div>
-                  )
-                })}
               </div>
             </div>
           )}
-        </div>
-      </main>
+        </section>
 
-      {/* Sticky Bottom DJ Audio Player */}
-      {currentTrack && (
-        <footer className="fixed bottom-0 left-0 right-0 z-50 border-t border-slate-800 bg-slate-950/95 p-3 shadow-2xl backdrop-blur-xl sm:p-4">
-          <div className="mx-auto flex max-w-7xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            {/* Left: Active Track Details */}
-            <div className="flex items-center gap-3 sm:w-1/4">
-              <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-slate-800 ring-1 ring-slate-700">
-                {currentTrack.has_cover ? (
-                  <img
-                    src={`/api/cover/${currentTrack.id}`}
-                    alt={currentTrack.title}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <Music className="m-3 h-6 w-6 text-slate-500" />
-                )}
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-white">
-                  {currentTrack.title}
-                </p>
-                <p className="truncate text-xs text-cyan-400">{currentTrack.artist}</p>
-              </div>
-            </div>
-
-            {/* Middle: Controls & Scrub Bar */}
-            <div className="flex flex-1 flex-col items-center gap-1.5 sm:max-w-xl">
-              <div className="flex items-center gap-4">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={playPrevTrack}
-                  className="h-8 w-8 rounded-full p-0 text-slate-400 hover:text-white"
-                >
-                  <SkipBack className="h-4 w-4" />
-                </Button>
-
-                <Button
-                  onClick={togglePlayPause}
-                  className="h-10 w-10 rounded-full bg-cyan-500 p-0 text-slate-950 shadow-lg shadow-cyan-500/30 hover:bg-cyan-400 hover:scale-105 transition-transform"
-                >
-                  {isPlaying ? (
-                    <Pause className="h-5 w-5" />
-                  ) : (
-                    <Play className="ml-0.5 h-5 w-5" />
-                  )}
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={playNextTrack}
-                  className="h-8 w-8 rounded-full p-0 text-slate-400 hover:text-white"
-                >
-                  <SkipForward className="h-4 w-4" />
-                </Button>
-              </div>
-
-              {/* Progress Slider */}
-              <div className="flex w-full items-center gap-3">
-                <span className="font-mono text-[11px] text-slate-400">
-                  {formatTime(currentTime)}
+        {/* Playlists */}
+        <section className="space-y-6">
+          <div className="flex items-center justify-between ml-1 max-w-5xl">
+            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-widest">Local Library</h2>
+            <div className="flex items-center gap-3">
+              {traktorPatchResult && (
+                <span className={`text-xs font-medium px-2 py-1 rounded ${traktorPatchResult.success ? 'bg-green-900/40 text-green-400' : 'bg-red-900/40 text-red-400'}`}>
+                  {traktorPatchResult.message}
                 </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={duration || 100}
-                  step={0.1}
-                  value={currentTime}
-                  onChange={handleSeek}
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-800 accent-cyan-400"
-                />
-                <span className="font-mono text-[11px] text-slate-400">
-                  {formatTime(duration)}
-                </span>
-              </div>
-            </div>
-
-            {/* Right: Volume Slider */}
-            <div className="hidden items-center justify-end gap-2.5 sm:flex sm:w-1/4">
-              <button
-                type="button"
-                onClick={() => setIsMuted(!isMuted)}
-                className="text-slate-400 hover:text-white"
+              )}
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={handleTraktorPatch}
+                disabled={isPatchingTraktor}
+                className="h-9 px-4 bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 disabled:opacity-50 rounded-lg transition-colors"
               >
-                {isMuted || volume === 0 ? (
-                  <VolumeX className="h-4 w-4 text-rose-400" />
-                ) : (
-                  <Volume2 className="h-4 w-4" />
-                )}
-              </button>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={isMuted ? 0 : volume}
-                onChange={(e) => {
-                  setVolume(parseFloat(e.target.value))
-                  setIsMuted(false)
-                }}
-                className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-slate-800 accent-cyan-400"
-              />
+                {isPatchingTraktor ? <RefreshCw className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Music className="w-3.5 h-3.5 mr-2" />}
+                Traktor Hotcues Generieren
+              </Button>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={handleSyncAll}
+                disabled={dlStatus.status === 'downloading'}
+                className="h-9 px-4 bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 disabled:opacity-50 rounded-lg transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 mr-2 ${dlStatus.status === 'downloading' ? 'animate-spin' : ''}`} />
+                Sync Config
+              </Button>
             </div>
           </div>
-        </footer>
-      )}
+          
+          <div className="flex flex-col md:flex-row gap-5 h-[50vh] min-h-[400px]">
+            {/* Left Column: Playlists */}
+            <div className="w-full md:w-1/3 flex flex-col gap-3 overflow-y-auto pr-2">
+              {playlists.length === 0 && (
+                <div className="p-8 border border-dashed border-zinc-800/80 rounded-2xl flex flex-col items-center justify-center text-zinc-500 text-sm h-full">
+                  No local playlists.
+                </div>
+              )}
+              
+              {playlists.map(p => (
+                <div 
+                  key={p.id} 
+                  className={`flex flex-col rounded-xl overflow-hidden border transition-all duration-200 cursor-pointer flex-shrink-0 ${expandedPlaylist === p.id ? 'border-zinc-500 bg-zinc-800/80' : 'border-zinc-800/50 bg-zinc-900/30 hover:border-zinc-700 hover:bg-zinc-900/60'}`}
+                  onClick={() => setExpandedPlaylist(p.id)}
+                >
+                  <div className="flex items-center justify-between p-4 relative group">
+                    <div className="relative z-10 w-full min-w-0 pr-3">
+                      <h3 className={`font-medium text-sm line-clamp-1 transition-colors ${expandedPlaylist === p.id ? 'text-white' : 'text-zinc-300 group-hover:text-white'}`}>{p.title}</h3>
+                      <p className={`text-[11px] font-medium mt-1 flex items-center gap-1.5 ${expandedPlaylist === p.id ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                        <Music className="w-3 h-3" />
+                        {p.tracks.length} Tracks
+                      </p>
+                    </div>
+                    <div className={`relative z-10 p-1.5 rounded-full transition-colors flex-shrink-0 ${expandedPlaylist === p.id ? 'bg-zinc-700 text-white' : 'text-zinc-600 bg-black/20 group-hover:bg-black/40 group-hover:text-zinc-400'}`}>
+                      <ChevronRight className="w-4 h-4" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Right Column: Tracklist */}
+            <div className="w-full md:w-2/3 bg-zinc-900/30 border border-zinc-800/50 rounded-2xl flex flex-col overflow-hidden">
+              {expandedPlaylist ? (
+                <>
+                  <div className="p-4 border-b border-zinc-800/50 bg-zinc-900/50 flex-shrink-0">
+                    <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                      <Music className="w-4 h-4 text-zinc-400" /> 
+                      {playlists.find(p => p.id === expandedPlaylist)?.title} 
+                      <span className="text-zinc-500 font-normal ml-2">({playlists.find(p => p.id === expandedPlaylist)?.tracks.length} Tracks)</span>
+                    </h3>
+                  </div>
+                  <div className="overflow-y-auto p-2 flex-1">
+                    {playlists.find(p => p.id === expandedPlaylist)?.tracks.map((track, idx) => (
+                      <div 
+                        key={idx}
+                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer text-sm transition-colors ${currentTrack?.file === track.file ? 'bg-zinc-100 text-zinc-900 font-medium shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'}`}
+                        onClick={() => {
+                          const p = playlists.find(p => p.id === expandedPlaylist);
+                          if (p) {
+                            setCurrentPlaylistCtx(p);
+                            setCurrentTrack(track);
+                          }
+                        }}
+                      >
+                        {currentTrack?.file === track.file && isPlaying ? (
+                          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse ml-1 flex-shrink-0" />
+                        ) : (
+                          <div className="w-2 h-2 ml-1 flex-shrink-0 opacity-50" />
+                        )}
+                        <span className="truncate flex-1 leading-relaxed">{track.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 text-sm">
+                  <Music className="w-8 h-8 mb-3 opacity-20" />
+                  Select a playlist to view tracks
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      </main>
+
+      {/* Floating Player */}
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[calc(100%-2rem)] md:max-w-3xl z-50">
+        <div className="flex flex-col gap-4 p-4 md:p-5 bg-zinc-100 text-zinc-900 border border-zinc-200 rounded-2xl shadow-2xl relative overflow-hidden">
+          
+          <div className="flex items-center justify-between relative z-10">
+            <div className="flex items-center gap-4 flex-1 overflow-hidden">
+              <div className="w-12 h-12 rounded-lg bg-zinc-200 flex items-center justify-center border border-zinc-300 flex-shrink-0">
+                <Music className="w-5 h-5 text-zinc-500" />
+              </div>
+              <div className="flex-1 min-w-0 pr-4">
+                <p className="font-semibold text-sm truncate">
+                  {currentTrack ? currentTrack.name : 'No track selected'}
+                </p>
+                <p className="text-zinc-500 text-xs truncate mt-0.5 font-medium">
+                  {currentPlaylistCtx ? currentPlaylistCtx.title : 'Local DJ Audio'}
+                </p>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-1 md:gap-3 flex-shrink-0 justify-center">
+              <Button variant="ghost" size="icon" onClick={() => handleSkip(-1)} className="text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200 rounded-full h-10 w-10">
+                <SkipBack className="w-5 h-5 fill-current" />
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => currentTrack && setIsPlaying(!isPlaying)}
+                className="w-14 h-14 bg-zinc-900 text-zinc-100 hover:bg-zinc-800 rounded-full transition-transform active:scale-95 shadow-md"
+              >
+                {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 ml-1 fill-current" />}
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => handleSkip(1)} className="text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200 rounded-full h-10 w-10">
+                <SkipForward className="w-5 h-5 fill-current" />
+              </Button>
+            </div>
+            
+            <div className="flex-1 hidden md:flex items-center justify-end gap-3 pl-6 relative">
+              {volume[0] === 0 ? <VolumeX className="w-4 h-4 text-zinc-500" /> : <Volume2 className="w-4 h-4 text-zinc-500" />}
+              <div className="w-16 [&_.bg-primary]:bg-zinc-900 [&_.bg-secondary]:bg-zinc-300 [&_[role=slider]]:bg-zinc-900 [&_[role=slider]]:border-zinc-900">
+                <Slider 
+                  value={volume} 
+                  max={100} 
+                  step={1} 
+                  onValueChange={handleVolumeChange}
+                  className="cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-4 w-full relative z-10">
+            <span className="text-[11px] font-semibold text-zinc-500 w-10 text-right font-mono tracking-tighter">
+              {formatTime(currentTime)}
+            </span>
+            <div className="flex-1 [&_.bg-primary]:bg-zinc-900 [&_.bg-secondary]:bg-zinc-300 [&_[role=slider]]:bg-zinc-900 [&_[role=slider]]:border-zinc-900">
+              <Slider 
+                value={progress} 
+                max={100} 
+                step={0.1} 
+                onValueChange={handleSliderChange}
+                onPointerUp={handleSliderCommit}
+                className="cursor-pointer"
+              />
+            </div>
+            <span className="text-[11px] font-semibold text-zinc-500 w-10 font-mono tracking-tighter">
+              {formatTime(duration)}
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
-  )
+  );
 }
