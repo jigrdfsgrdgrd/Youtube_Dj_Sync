@@ -2,9 +2,11 @@ import path from 'path';
 import fsSync from 'fs';
 
 export function getConfigPath(): string {
-  const external = 'C:\\Users\\juliu\\.gemini\\antigravity\\scratch\\spotify-yt-sync\\config.json';
-  if (fsSync.existsSync(external)) return external;
-  return path.join(process.cwd(), 'config.json');
+  const localPath = path.join(process.cwd(), 'config.json');
+  if (fsSync.existsSync(localPath)) return localPath;
+  const rootPath = path.join(process.cwd(), '..', 'config.json');
+  if (fsSync.existsSync(rootPath)) return rootPath;
+  return localPath;
 }
 
 export interface YtDlpOptions {
@@ -61,10 +63,12 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
     args.push('--cookies', destCookies);
   }
 
-  // Optional: Deno Runtime falls installiert
+  // JS Runtime für YouTube Signature Solving (EJS Challenge Solver)
   const denoPath = 'C:\\Users\\juliu\\.deno\\bin\\deno.exe';
   if (fsSync.existsSync(denoPath)) {
     args.push('--js-runtimes', `deno:${denoPath}`);
+  } else {
+    args.push('--js-runtimes', 'node');
   }
 
   // Optional: Eigener FFmpeg-Pfad aus config.json (falls vorhanden)

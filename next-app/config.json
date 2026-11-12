@@ -14,9 +14,8 @@
     "auth_file": "headers_auth.json"
   },
   "downloads": {
-    "destination_path": "C:\\Users\\juliu\\Music\\DJ_Downloads",
+    "destination_path": "C:\\Users\\juliu\\Music",
     "ffmpeg_path": "",
     "audio_quality": "320"
   }
 }
-
