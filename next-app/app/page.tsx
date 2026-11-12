@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import { Trash2, Play, Pause, SkipBack, SkipForward, Music, Plus, Settings, ChevronDown, ChevronRight, Volume2, VolumeX, RefreshCw } from "lucide-react";
+import { Trash2, Play, Pause, SkipBack, SkipForward, Music, Plus, Settings, ChevronDown, ChevronRight, Volume2, VolumeX, RefreshCw, Upload } from "lucide-react";
 
 type Track = { name: string; file: string };
 type Playlist = { id: string; title: string; tracks: Track[]; status: string };
@@ -31,6 +31,73 @@ export default function SyncTool() {
   const [showSettings, setShowSettings] = useState(false);
   const [showVolume, setShowVolume] = useState(false);
 
+  // Cookie state
+  type CookieStatus = {
+    exists: boolean;
+    path?: string;
+    sizeBytes?: number;
+    updatedAt?: string;
+    cookieCount?: number;
+    hasYoutube?: boolean;
+    hasAuth?: boolean;
+  };
+  const [cookieStatus, setCookieStatus] = useState<CookieStatus | null>(null);
+  const [cookieUploading, setCookieUploading] = useState(false);
+  const [cookieMsg, setCookieMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const cookieFileRef = useRef<HTMLInputElement | null>(null);
+
+  const loadCookieStatus = async () => {
+    try {
+      const res = await fetch('/api/cookies');
+      const data = await res.json();
+      setCookieStatus(data);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleCookieSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setCookieUploading(true);
+    setCookieMsg(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/cookies', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCookieStatus(data);
+        setCookieMsg({ text: data.message || 'Cookie-Datei erfolgreich hinterlegt!', ok: true });
+      } else {
+        setCookieMsg({ text: data.error || 'Fehler beim Hochladen der Cookies.', ok: false });
+      }
+    } catch {
+      setCookieMsg({ text: 'Verbindungsfehler beim Upload.', ok: false });
+    } finally {
+      setCookieUploading(false);
+      if (cookieFileRef.current) cookieFileRef.current.value = '';
+    }
+  };
+
+  const handleDeleteCookies = async () => {
+    try {
+      const res = await fetch('/api/cookies', { method: 'DELETE' });
+      if (res.ok) {
+        setCookieStatus({ exists: false });
+        setCookieMsg({ text: 'Cookies wurden entfernt.', ok: true });
+      }
+    } catch {
+      setCookieMsg({ text: 'Fehler beim Entfernen der Cookies.', ok: false });
+    }
+  };
+
   // Load configuration
   const loadConfig = async () => {
     try {
@@ -40,6 +107,7 @@ export default function SyncTool() {
     } catch (error) {
       console.error('Failed to load config:', error);
     }
+    loadCookieStatus();
   };
 
   const saveConfig = async () => {
@@ -275,15 +343,90 @@ export default function SyncTool() {
           </div>
           
           {showSettings && (
-            <div className="w-full bg-zinc-900/50 border border-zinc-800/80 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 text-left mt-4">
-              <label className="text-[10px] font-medium text-zinc-500 uppercase tracking-widest ml-1 mb-2 block">Local Destination Path</label>
-              <Input 
-                placeholder="C:\Users\...\Music\DJ_Downloads" 
-                value={destPath} 
-                onChange={e => setDestPath(e.target.value)} 
-                onBlur={saveConfig}
-                className="h-10 bg-zinc-900 border-zinc-800 text-zinc-300 focus-visible:ring-zinc-700 rounded-lg px-4 w-full shadow-sm text-sm font-mono"
-              />
+            <div className="w-full bg-zinc-900/50 border border-zinc-800/80 rounded-xl p-5 animate-in fade-in slide-in-from-top-2 text-left mt-4 space-y-5">
+              <div>
+                <label className="text-[10px] font-medium text-zinc-500 uppercase tracking-widest ml-1 mb-2 block">
+                  Lokaler Zielordner (Download-Pfad)
+                </label>
+                <Input 
+                  placeholder="C:\Users\...\Music\DJ_Downloads" 
+                  value={destPath} 
+                  onChange={e => setDestPath(e.target.value)} 
+                  onBlur={saveConfig}
+                  className="h-10 bg-zinc-900 border-zinc-800 text-zinc-300 focus-visible:ring-zinc-700 rounded-lg px-4 w-full shadow-sm text-sm font-mono"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-zinc-800/60">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-[10px] font-medium text-zinc-500 uppercase tracking-widest ml-1">
+                    YouTube Premium Cookies (cookies.txt)
+                  </label>
+                  {cookieStatus?.exists ? (
+                    <span className="text-[11px] font-medium text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 rounded px-2 py-0.5">
+                      ✓ Aktiv ({cookieStatus.cookieCount || 0} Cookies{cookieStatus.hasAuth ? ' • Login erkannt' : ''})
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-medium text-zinc-500 bg-zinc-900 border border-zinc-800 rounded px-2 py-0.5">
+                      Nicht hinterlegt (Standard-Qualität)
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-xs text-zinc-400 mb-3 ml-1">
+                  Ermöglicht ungedrosselte 256k AAC- und Opus-Quellstreams direkt von YouTube Music.
+                </p>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <input 
+                    type="file" 
+                    accept=".txt" 
+                    ref={cookieFileRef}
+                    onChange={handleCookieSelect}
+                    className="hidden" 
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => cookieFileRef.current?.click()}
+                    disabled={cookieUploading}
+                    className="h-9 px-4 bg-zinc-900 border-zinc-700 text-zinc-200 hover:bg-zinc-800 rounded-lg text-xs"
+                  >
+                    <Upload className="w-3.5 h-3.5 mr-2" />
+                    {cookieUploading ? 'Wird geprüft...' : cookieStatus?.exists ? 'Neue cookies.txt auswählen' : 'cookies.txt auswählen'}
+                  </Button>
+
+                  {cookieStatus?.exists && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleDeleteCookies}
+                      className="h-9 px-3 text-zinc-500 hover:text-red-400 hover:bg-red-950/20 rounded-lg text-xs"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                      Entfernen
+                    </Button>
+                  )}
+
+                  {cookieStatus?.exists && cookieStatus.updatedAt && (
+                    <span className="text-[11px] text-zinc-500 font-mono">
+                      Zuletzt aktualisiert: {cookieStatus.updatedAt}
+                    </span>
+                  )}
+                </div>
+
+                {cookieMsg && (
+                  <div className={`mt-3 text-xs px-3 py-2 rounded-lg border ${
+                    cookieMsg.ok 
+                      ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-300' 
+                      : 'bg-red-950/40 border-red-800/50 text-red-300'
+                  }`}>
+                    {cookieMsg.text}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </header>
