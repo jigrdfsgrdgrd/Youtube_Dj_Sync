@@ -16,9 +16,10 @@ export default function SyncTool() {
   
   // Audio state
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const isScrubbingRef = useRef(false);
+  const handleSkipRef = useRef<(direction: number) => void>(() => {});
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState([0]); // percentage
-  const [isScrubbing, setIsScrubbing] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState([80]);
@@ -90,20 +91,22 @@ export default function SyncTool() {
     };
   }, []);
 
-  // Audio initialization
+  // Audio initialization (only once on mount so scrubbing never recreates/stops the Audio instance!)
   useEffect(() => {
     const audio = new Audio();
     audioRef.current = audio;
 
     const updateTime = () => {
-      setCurrentTime(audio.currentTime);
-      if (audio.duration && !isScrubbing) {
-        setProgress([(audio.currentTime / audio.duration) * 100]);
+      if (!isScrubbingRef.current) {
+        setCurrentTime(audio.currentTime);
+        if (audio.duration) {
+          setProgress([(audio.currentTime / audio.duration) * 100]);
+        }
       }
     };
     
     const updateDuration = () => setDuration(audio.duration);
-    const onEnded = () => handleSkip(1); // Auto play next track
+    const onEnded = () => handleSkipRef.current(1); // Auto play next track
 
     audio.addEventListener('timeupdate', updateTime);
     audio.addEventListener('loadedmetadata', updateDuration);
@@ -115,7 +118,7 @@ export default function SyncTool() {
       audio.removeEventListener('ended', onEnded);
       audio.pause();
     };
-  }, [isScrubbing]); // Re-bind when scrubbing state changes to prevent jumps
+  }, []);
 
   // Set initial volume
   useEffect(() => {
@@ -146,17 +149,21 @@ export default function SyncTool() {
 
   const handleSliderChange = (val: any) => {
     const numericVal = Array.isArray(val) ? val[0] : val;
-    setIsScrubbing(true);
+    isScrubbingRef.current = true;
     setProgress([numericVal]);
     if (audioRef.current && duration) {
       const newTime = (numericVal / 100) * duration;
       audioRef.current.currentTime = newTime;
       setCurrentTime(newTime);
     }
+    // Falls nur geklickt statt gezogen wurde, nach kurzem Timeout Scrubbing-Lock freigeben
+    setTimeout(() => {
+      isScrubbingRef.current = false;
+    }, 150);
   };
 
   const handleSliderCommit = () => {
-    setIsScrubbing(false);
+    isScrubbingRef.current = false;
   };
 
   const handleVolumeChange = (val: any) => {
@@ -180,6 +187,7 @@ export default function SyncTool() {
     
     setCurrentTrack(tracks[nextIndex]);
   };
+  handleSkipRef.current = handleSkip;
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();

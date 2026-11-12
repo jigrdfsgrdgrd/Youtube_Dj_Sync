@@ -1,18 +1,18 @@
 # 🎧 DJ Local Sync
 
-> Ein modernes Next.js Web-Interface zum Synchronisieren und Herunterladen von YouTube-Playlists direkt auf deine lokale Festplatte – inklusive integriertem DJ-Player und automatischer Traktor Hotcue-Generierung.
+> Ein modernes Next.js Web-Interface zum Synchronisieren und Herunterladen von YouTube- & YouTube Music-Playlists direkt auf deine lokale Festplatte – inklusive integriertem DJ-Player und automatischer Traktor Hotcue-Generierung.
 
 ---
 
 ## ✨ Features
 
-- 🎵 **YouTube & YouTube Music Sync:** Lade Playlists direkt per URL oder Playlist-ID herunter (`yt-dlp` Integration).
-- 📁 **Lokale DJ-Bibliothek:** Übersicht all deiner heruntergeladenen Playlists und Tracks mit Sofort-Wiedergabe.
-- 🎛️ **Integrierter Audio-Player:** Eleganter Floating-Player mit Play/Pause, Track-Wechsel, Scrubbing (HTTP 206 Streaming) und Lautstärkeregler.
-- ⚡ **Live Download-Fortschritt:** Anzeige von Fortschritt in Prozent, Song-Zähler und verbleibender Zeit (ETA).
-- 🏷️ **Traktor Hotcues Generieren:** Automatische Hotcue-Erstellung (Auto Load, Intro 16 Bars, Drop 32 Bars, Mid 64 Bars) direkt in deiner Traktor Collection (`collection.nml`).
-- 🔄 **Sync Config:** Synchronisiere alle in der Konfiguration hinterlegten Playlists mit einem Klick.
-- 🚀 **1-Klick Windows Launcher:** Ein Klick auf `start_dj_sync.bat` startet den Server und öffnet automatisch den Browser.
+- 🔊 **Echte 320 kbps CBR Audio-Qualität:** Zieht automatisch den besten verfügbaren Audio-Stream (`bestaudio[acodec=opus]/bestaudio`) und konvertiert ihn per FFmpeg in echte **320 kbps Constant Bitrate (CBR)** MP3s – für präzise Beatgrids und sauberes Scrubbing in Traktor.
+- 📅 **Korrektes Download-Datum für Traktor (`--no-mtime`):** Neu heruntergeladene Tracks erhalten exakt den heutigen Download-Zeitpunkt als Dateidatum (nicht das alte YouTube-Upload-Jahr), sodass neue Downloads beim Sortieren nach Datum immer ganz oben stehen.
+- 🧹 **Saubere Dateinamen & Duplikat-Schutz:** Entfernt automatisch Kanal-Zusätze wie `" - Topic"` sowie `(Official Video)`, `(Lyrics)` oder `[HD]` aus den Titeln und schützt bestehende Tracks + Hotcues über `archive.txt` und `--no-overwrites`.
+- 🎛️ **Integrierter DJ Audio-Player:** Floating-Player mit unterbrechungsfreiem Vor-/Zurückspulen (HTTP 206 Byte-Range Streaming), Auto-Next und Lautstärkeregler.
+- 🏷️ **Traktor Hotcues Generieren:** Automatische Beatgrid-basierte Hotcue-Erstellung (*Auto Load*, *Intro 16 Bars*, *Break/Drop 32 Bars*, *Mid 64 Bars*) direkt in deiner Traktor Collection (`collection.nml`) – ohne das ursprüngliche Download-Datum deiner Dateien zu verändern.
+- 🔄 **Sync Config & Parallel-Download:** Synchronisiere alle in der Konfiguration hinterlegten Playlists mit einem Klick (`--concurrent-fragments 4` für maximale Geschwindigkeit).
+- ⚡ **Sofort-Start (`start_dj_sync.bat`):** Nutzt den vorkompilierten Production-Server und startet in unter 1 Sekunde.
 
 ---
 
@@ -20,57 +20,52 @@
 
 ### 1. Repository klonen
 
-Öffne ein Terminal (PowerShell oder CMD) auf deinem Laptop:
+Öffne PowerShell oder CMD auf deinem Laptop:
 
-```bash
+```powershell
 git clone https://github.com/jigrdfsgrdgrd/Youtube_Dj_Sync.git
 cd Youtube_Dj_Sync
 ```
 
----
-
 ### 2. Voraussetzungen installieren (Einmalig)
 
-Falls auf dem Laptop noch kein Node.js, `yt-dlp` oder `ffmpeg` installiert ist, kannst du das mit einem einzigen PowerShell-Befehl über `winget` erledigen:
+Falls auf dem Laptop noch kein Node.js, `yt-dlp` oder `ffmpeg` installiert ist, installiere alles bequem mit einem einzigen PowerShell-Befehl:
 
 ```powershell
 winget install OpenJS.NodeJS yt-dlp Gyan.FFmpeg
 ```
 
-> **Hinweis:** Nach der Installation das Terminal einmal neu starten, damit die Befehle im System-`PATH` erkannt werden.
-
----
+> **Hinweis:** Nach der Erstinstallation das Terminal einmal neu öffnen, damit die Programme im System-`PATH` verfügbar sind.
 
 ### 3. App starten
 
 Mache einfach einen **Doppelklick auf:**
 📁 **`start_dj_sync.bat`**
 
-Das Skript:
-1. Prüft automatisch Node.js und `yt-dlp`.
-2. Installiert beim ersten Start alle Abhängigkeiten (`npm install`).
-3. Startet den lokalen Server und öffnet die Benutzeroberfläche unter `http://localhost:3000`.
+- Beim **allerersten Start** installiert das Skript automatisch alle Pakete (`npm install`) und baut einmalig den schnellen Production-Build (`npm run build`).
+- Bei **jedem weiteren Start** ist die App in **unter 1 Sekunde** unter `http://localhost:3000` sofort einsatzbereit!
 
 ---
 
-## ⚙️ Einstellungen & Speicherort
+## ⚙️ Einstellungen & Optionale Features
 
-- Klicke oben rechts auf das **Zahnrad-Symbol** (⚙️), um deinen lokalen Zielpfad anzupassen (z. B. `C:\Users\...\Music\DJ_Downloads` oder ein externes Laufwerk wie `Z:\Musik\DJ_Downloads`).
-- Deine Playlists für den Bulk-Download kannst du in `next-app/config.json` unter `"playlist_ids"` eintragen.
+- **Speicherort ändern:** Klicke oben rechts auf das **Zahnrad-Symbol (⚙️)**, um deinen lokalen Zielpfad anzupassen (z. B. `C:\Users\...\Music\DJ_Downloads` oder `Z:\Musik\DJ_Downloads`).
+- **Playlists verwalten:** Jede neu heruntergeladene Playlist-URL wird automatisch in `config.json` gespeichert und beim Klick auf **Sync Config** mit aktualisiert.
+- **YouTube Premium (Optional):** Das Tool funktioniert standardmäßig komplett ohne Login. Falls du irgendwann YouTube-Premium-Cookies nutzen möchtest, lege einfach eine exportierte `cookies.txt` in den Ordner `next-app/` – sie wird automatisch erkannt (und von Git ignoriert).
 
 ---
 
-## 🛠️ Manuelle Ausführung
+## 🛠️ Manuelle Befehle (Entwicklung)
 
 ```bash
 cd next-app
 npm install
-npm run dev
+npm run build   # Production-Build aktualisieren
+npm run start   # Schnellen Production-Server starten
 ```
-Anschließend im Browser öffnen: [http://localhost:3000](http://localhost:3000)
 
 ---
 
 ## 📄 Lizenz
 
-MIT License - Siehe [LICENSE](LICENSE)
+MIT License – Siehe [LICENSE](LICENSE)

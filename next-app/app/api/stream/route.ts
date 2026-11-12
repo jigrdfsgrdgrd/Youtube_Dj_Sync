@@ -69,6 +69,7 @@ export async function GET(req: NextRequest) {
     return new NextResponse(fileBuffer, {
       status: 200,
       headers: {
+        'Accept-Ranges': 'bytes',
         'Content-Length': total.toString(),
         'Content-Type': 'audio/mpeg',
       }

@@ -78,3 +78,4 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
   args.push(...opts.urls);
   return args;
 }
+
