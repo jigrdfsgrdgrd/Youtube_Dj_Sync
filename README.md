@@ -40,7 +40,9 @@ winget install OpenJS.NodeJS yt-dlp Gyan.FFmpeg
 ### 3. App starten
 
 Mache einfach einen **Doppelklick auf:**
-📁 **`start_dj_sync.bat`**
+🎧 **`DJ Sync.exe`** *(mit eigenem DJ Sync Logo)* oder **`start_dj_sync.bat`**
+
+> **Tipp:** Mit `powershell -ExecutionPolicy Bypass -File .\create_shortcut.ps1` kannst du dir auch auf dem Laptop jederzeit eine Desktop-Verknüpfung mit dem Logo anlegen.
 
 - Beim **allerersten Start** installiert das Skript automatisch alle Pakete (`npm install`) und baut einmalig den schnellen Production-Build (`npm run build`).
 - Bei **jedem weiteren Start** ist die App in **unter 1 Sekunde** unter `http://localhost:3000` sofort einsatzbereit!
