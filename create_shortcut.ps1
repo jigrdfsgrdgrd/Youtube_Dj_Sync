@@ -10,3 +10,4 @@ $Shortcut.WorkingDirectory = $RootDir
 $Shortcut.IconLocation = "$IconPath,0"
 $Shortcut.Save()
 Write-Host "Desktop-Verknuepfung 'DJ Sync' mit Logo erfolgreich erstellt!"
+
