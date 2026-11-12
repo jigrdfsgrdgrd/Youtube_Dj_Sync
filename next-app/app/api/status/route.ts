@@ -12,6 +12,6 @@ export async function GET() {
     return NextResponse.json(data);
   } catch (error) {
     // If file doesn't exist, return idle state
-    return NextResponse.json({ status: 'idle', percentage: 0, eta: '' });
+    return NextResponse.json({ status: 'idle', percentage: 0, playlistName: '', songTitle: '' });
   }
 }

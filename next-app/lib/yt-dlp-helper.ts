@@ -48,6 +48,8 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
     // Bereinige "- Topic" bei YouTube-Music-Channels & unnötige Video-Zusätze im Titel
     '--replace-in-metadata', 'artist,uploader', ' - Topic$', '',
     '--replace-in-metadata', 'title', ' ?[\\(\\[](Official|Offizielles|Music|Audio|Video|Lyrics|Lyric|HD|4K|Visualizer).*?[\\)\\]]', '',
+    // Live-Fortschritt mit Playlist- und Track-Titel für das UI ausgeben
+    '--progress-template', 'download:[dj_progress] %(info.playlist_title,info.playlist|NA)s | %(info.title)s | %(progress._percent_str)s',
     '--remote-components', 'ejs:github',
     '-o', outputTemplate,
   ];
