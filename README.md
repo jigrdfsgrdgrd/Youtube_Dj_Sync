@@ -11,11 +11,12 @@ Für den Betrieb unter Windows werden folgende Komponenten benötigt:
 * Node.js (Version 18 oder neuer)
 * yt-dlp
 * FFmpeg
+* Deno (empfohlener JS-Runtime-Solver für yt-dlp Signatur- & Audio-Entschlüsselung)
 
 Falls diese Programme noch nicht vorhanden sind, können sie über die Windows PowerShell mit dem Windows Package Manager (winget) installiert werden:
 
 ```powershell
-winget install OpenJS.NodeJS yt-dlp Gyan.FFmpeg
+winget install OpenJS.NodeJS yt-dlp Gyan.FFmpeg DenoLand.Deno
 ```
 
 Hinweis: Nach der Installation muss das Terminal bzw. die PowerShell einmal geschlossen und neu geöffnet werden, damit die Umgebungsvariablen aktiv sind.

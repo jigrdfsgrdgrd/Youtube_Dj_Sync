@@ -64,11 +64,16 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
   }
 
   // JS Runtime für YouTube Signature Solving (EJS Challenge Solver)
-  const denoPath = 'C:\\Users\\juliu\\.deno\\bin\\deno.exe';
-  if (fsSync.existsSync(denoPath)) {
-    args.push('--js-runtimes', `deno:${denoPath}`);
+  const candidateDenoPaths = [
+    'C:\\Users\\juliu\\AppData\\Local\\Microsoft\\WinGet\\Links\\deno.exe',
+    'C:\\Users\\juliu\\AppData\\Local\\Microsoft\\WinGet\\Packages\\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\\deno.exe',
+    'C:\\Users\\juliu\\.deno\\bin\\deno.exe'
+  ];
+  const foundDeno = candidateDenoPaths.find(p => fsSync.existsSync(p));
+  if (foundDeno) {
+    args.push('--js-runtimes', `deno:${foundDeno}`);
   } else {
-    args.push('--js-runtimes', 'node');
+    args.push('--js-runtimes', 'deno,node');
   }
 
   // Optional: Eigener FFmpeg-Pfad aus config.json (falls vorhanden)
