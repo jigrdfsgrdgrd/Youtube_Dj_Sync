@@ -285,6 +285,19 @@ export default function SyncTool() {
     }
   };
 
+  const handleCancelDownload = async () => {
+    try {
+      await fetch('/api/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel' })
+      });
+      setDlStatus({ status: 'idle', percentage: 0, eta: '' });
+    } catch (err) {
+      console.error('Failed to cancel download:', err);
+    }
+  };
+
   const [isPatchingTraktor, setIsPatchingTraktor] = useState(false);
   const [traktorPatchResult, setTraktorPatchResult] = useState<{success?: boolean, message?: string} | null>(null);
 
@@ -460,11 +473,21 @@ export default function SyncTool() {
                   <RefreshCw className="w-3 h-3 mr-1.5 animate-spin" />
                   Downloading...
                 </span>
-                <span className="text-xs text-zinc-400 font-mono">
-                  {dlStatus.playlistTotal && dlStatus.playlistTotal > 0 ? `Playlist ${dlStatus.playlistCurrent || 1}/${dlStatus.playlistTotal} - ` : ''}
-                  {dlStatus.videoTotal && dlStatus.videoTotal > 0 ? `Song ${dlStatus.videoCurrent}/${dlStatus.videoTotal} - ` : ''}
-                  {dlStatus.eta ? `ETA: ${dlStatus.eta}` : 'Calculating...'}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-zinc-400 font-mono">
+                    {dlStatus.playlistTotal && dlStatus.playlistTotal > 0 ? `Playlist ${dlStatus.playlistCurrent || 1}/${dlStatus.playlistTotal} - ` : ''}
+                    {dlStatus.videoTotal && dlStatus.videoTotal > 0 ? `Song ${dlStatus.videoCurrent}/${dlStatus.videoTotal} - ` : ''}
+                    {dlStatus.eta ? `ETA: ${dlStatus.eta}` : 'Calculating...'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCancelDownload}
+                    className="text-xs text-zinc-500 hover:text-red-400 underline transition-colors cursor-pointer"
+                    title="Download abbrechen und Status zurücksetzen"
+                  >
+                    Abbrechen
+                  </button>
+                </div>
               </div>
               <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
                 <div 

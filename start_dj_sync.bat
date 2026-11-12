@@ -9,6 +9,9 @@ if %errorlevel% equ 0 (
     exit /b 0
 )
 
+:: Frischen Status sicherstellen (loescht haengengebliebene Download-Zustaende vorheriger Abstuerze)
+if exist "progress.json" del /f /q "progress.json" >nul 2>&1
+
 :: 1. Node.js Check
 where node >nul 2>&1
 if %errorlevel% neq 0 (
@@ -33,13 +36,28 @@ if not exist "node_modules\next\dist\bin\next" (
     )
 )
 
-:: 3. Production-Build erstellen (falls noch nicht vorhanden)
-if not exist ".next\BUILD_ID" (
+:: 3. Production-Build erstellen (falls noch nicht vorhanden oder neuer Git-Commit vorhanden)
+set NEED_BUILD=0
+if not exist ".next\BUILD_ID" set NEED_BUILD=1
+
+set CURRENT_COMMIT=
+for /f %%i in ('git rev-parse HEAD 2^>nul') do set CURRENT_COMMIT=%%i
+set LAST_COMMIT=
+if exist ".next\LAST_COMMIT" set /p LAST_COMMIT=<.next\LAST_COMMIT
+
+if defined CURRENT_COMMIT (
+    if not "%CURRENT_COMMIT%"=="%LAST_COMMIT%" set NEED_BUILD=1
+)
+
+if "%NEED_BUILD%"=="1" (
     echo ============================================================
-    echo [SETUP 2/2] Erstelle schnellen Production-Build ^(einmalig^)...
+    echo [SETUP 2/2] Erstelle schnellen Production-Build...
+    echo Bitte kurz warten, die App wird fuer die neue Version gebaut.
     echo ============================================================
     call node "node_modules\next\dist\bin\next" build
-    if not exist ".next\BUILD_ID" (
+    if exist ".next\BUILD_ID" (
+        if defined CURRENT_COMMIT echo %CURRENT_COMMIT%>.next\LAST_COMMIT
+    ) else (
         echo.
         echo [HINWEIS] Production-Build nicht erstellt, starte im Dev-Modus...
         start "DJ Local Sync Server" /min cmd /k "node node_modules\next\dist\bin\next dev"
@@ -53,6 +71,6 @@ if not exist ".next\BUILD_ID" (
 start "DJ Local Sync Server" /min cmd /k "node node_modules\next\dist\bin\next start"
 
 :: Kurz warten (~1 Sekunde) und Browser oeffnen
-timeout /t 1 /nobreak >nul
+ping 127.0.0.1 -n 2 >nul
 start http://localhost:3000
 exit

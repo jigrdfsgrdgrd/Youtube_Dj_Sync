@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
-import path from 'path';
 import fs from 'fs/promises';
 import { getConfigPath, buildYtDlpArgs } from '@/lib/yt-dlp-helper';
+import { setActiveProcess, writeStatus, getActiveProcess, cancelDownload } from '@/lib/download-manager';
 
 export async function POST() {
   try {
@@ -20,6 +20,10 @@ export async function POST() {
     const playlistIds = configData.youtube_music?.playlist_ids || [];
     if (playlistIds.length === 0) {
       return NextResponse.json({ error: 'No playlists found in config' }, { status: 400 });
+    }
+
+    if (getActiveProcess()) {
+      await cancelDownload();
     }
 
     const basePath = configData.downloads?.destination_path || 'C:\\Users\\juliu\\Music\\DJ_Downloads';
@@ -42,11 +46,7 @@ export async function POST() {
     console.log(`Starting 320k CBR bulk sync for ${urls.length} playlists...`);
 
     const ytDlpProcess = spawn('yt-dlp', args);
-
-    const progressPath = path.join(process.cwd(), 'progress.json');
-    const setStatus = async (statusObj: any) => {
-      try { await fs.writeFile(progressPath, JSON.stringify(statusObj)); } catch {}
-    };
+    setActiveProcess(ytDlpProcess);
 
     const playlistTotal = urls.length;
     let playlistSeenCount = 0;
@@ -54,7 +54,7 @@ export async function POST() {
     let videoCurrent = 0;
     let videoTotal = 0;
 
-    await setStatus({ 
+    await writeStatus({ 
       status: 'downloading', 
       percentage: 0, 
       eta: '...', 
@@ -82,7 +82,7 @@ export async function POST() {
 
       const match = text.match(/\[download\]\s+(\d+\.?\d*)%.*?ETA\s+([\d:]+)/);
       if (match) {
-        await setStatus({
+        await writeStatus({
           status: 'downloading',
           percentage: parseFloat(match[1]),
           eta: match[2],
@@ -98,9 +98,24 @@ export async function POST() {
       console.error(`yt-dlp error: ${data.toString().trim()}`);
     });
 
+    ytDlpProcess.on('error', async (err) => {
+      console.error('yt-dlp bulk sync spawn/execution error:', err);
+      setActiveProcess(null);
+      await writeStatus({ 
+        status: 'idle', 
+        percentage: 0, 
+        eta: '', 
+        videoCurrent: 0, 
+        videoTotal: 0,
+        playlistCurrent: 0,
+        playlistTotal: 0
+      });
+    });
+
     ytDlpProcess.on('close', async (code) => {
       console.log(`yt-dlp bulk sync process exited with code ${code}`);
-      await setStatus({ 
+      setActiveProcess(null);
+      await writeStatus({ 
         status: 'idle', 
         percentage: 100, 
         eta: '', 
@@ -114,6 +129,16 @@ export async function POST() {
     return NextResponse.json({ success: true, message: 'Bulk sync started in background' });
   } catch (error) {
     console.error('Error starting bulk sync:', error);
+    setActiveProcess(null);
+    await writeStatus({ 
+      status: 'idle', 
+      percentage: 0, 
+      eta: '', 
+      videoCurrent: 0, 
+      videoTotal: 0,
+      playlistCurrent: 0,
+      playlistTotal: 0
+    });
     return NextResponse.json({ error: 'Failed to start bulk sync' }, { status: 500 });
   }
 }

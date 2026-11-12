@@ -1,17 +1,23 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs/promises';
-import path from 'path';
+import { readStatus, cancelDownload } from '@/lib/download-manager';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const progressPath = path.join(process.cwd(), 'progress.json');
+  const status = await readStatus();
+  return NextResponse.json(status);
+}
+
+export async function POST(req: Request) {
   try {
-    const file = await fs.readFile(progressPath, 'utf-8');
-    const data = JSON.parse(file);
-    return NextResponse.json(data);
+    const body = await req.json().catch(() => ({}));
+    if (body.action === 'cancel' || body.action === 'reset') {
+      await cancelDownload();
+      return NextResponse.json({ success: true, message: 'Download abgebrochen / zurückgesetzt.' });
+    }
+    return NextResponse.json({ error: 'Unbekannte Aktion' }, { status: 400 });
   } catch (error) {
-    // If file doesn't exist, return idle state
-    return NextResponse.json({ status: 'idle', percentage: 0, eta: '' });
+    await cancelDownload();
+    return NextResponse.json({ success: true, message: 'Status zurückgesetzt.' });
   }
 }
