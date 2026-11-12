@@ -331,43 +331,14 @@ export default function SyncTool() {
             <p className="text-zinc-500 text-sm max-w-sm mx-auto">
               Sync YouTube Playlists directly to your local drive.
             </p>
-
-            {/* Quick Status Pill for Cookies */}
-            <div className="flex items-center justify-center gap-2 pt-1">
-              <button 
-                type="button"
-                onClick={() => setShowSettings(prev => !prev)} 
-                className="inline-flex items-center gap-2 text-xs px-3 py-1 rounded-full border transition-all bg-zinc-900/80 hover:bg-zinc-800 border-zinc-800 text-zinc-300 shadow-sm cursor-pointer"
-                title="Klicken, um Cookie-Einstellungen zu öffnen"
-              >
-                {cookieStatus?.exists ? (
-                  <>
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                    <span className="text-emerald-400 font-medium">YouTube Premium Cookies aktiv</span>
-                    <span className="text-zinc-500 text-[11px]">({cookieStatus.cookieCount} Cookies{cookieStatus.hasAuth ? ' • Login verifiziert' : ''})</span>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-3 h-3 text-amber-400" />
-                    <span className="text-zinc-300 font-medium">YouTube Cookies hinzufügen</span>
-                    <span className="text-zinc-500 text-[11px]">(für 256k Premium-Audio)</span>
-                  </>
-                )}
-              </button>
-            </div>
             
             <Button 
-              variant="outline" 
-              size="sm" 
+              variant="ghost" 
+              size="icon" 
               onClick={() => setShowSettings(!showSettings)}
-              className="absolute right-0 top-0 h-9 px-3 bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg text-xs flex items-center gap-2"
-              title="Einstellungen öffnen"
+              className="absolute right-0 top-0 text-zinc-500 hover:text-zinc-100"
             >
-              <Settings className="w-4 h-4" />
-              <span className="hidden sm:inline">Einstellungen</span>
-              {cookieStatus?.exists && (
-                <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              )}
+              <Settings className="w-5 h-5" />
             </Button>
           </div>
           
@@ -534,20 +505,6 @@ export default function SyncTool() {
               >
                 <RefreshCw className={`w-3.5 h-3.5 mr-2 ${dlStatus.status === 'downloading' ? 'animate-spin' : ''}`} />
                 Sync Config
-              </Button>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={() => {
-                  setShowSettings(true);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-                className={`h-9 px-4 bg-zinc-900/50 border-zinc-800 rounded-lg transition-colors flex items-center gap-2 ${
-                  cookieStatus?.exists ? 'text-emerald-400 hover:bg-emerald-950/30' : 'text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800'
-                }`}
-              >
-                <Upload className="w-3.5 h-3.5" />
-                {cookieStatus?.exists ? 'Cookies (Aktiv)' : 'Cookies'}
               </Button>
             </div>
           </div>
