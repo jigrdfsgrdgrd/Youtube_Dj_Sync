@@ -39,6 +39,9 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
     '--embed-metadata',
     // WICHTIG: Dateidatum = heutiges Download-Datum (nicht das alte YouTube-Upload-Datum!)
     '--no-mtime',
+    // Einzelne gelöschte oder gesperrte Videos überspringen, damit die restliche Playlist durchläuft
+    '--ignore-errors',
+    '--no-abort-on-error',
     // Hotcue- & Duplikat-Schutz
     '--no-overwrites',
     '--download-archive', archivePath,

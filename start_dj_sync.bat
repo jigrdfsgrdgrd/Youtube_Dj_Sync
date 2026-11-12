@@ -18,6 +18,12 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+:: yt-dlp automatisch aktuell halten (verhindert HTTP 403 Fehler durch YouTube-Aenderungen)
+where yt-dlp >nul 2>&1
+if %errorlevel% equ 0 (
+    call yt-dlp -U >nul 2>&1
+)
+
 :: 2. Pruefe ob Next.js wirklich vollstaendig in node_modules installiert ist
 if not exist "node_modules\next\dist\bin\next" (
     echo ============================================================
