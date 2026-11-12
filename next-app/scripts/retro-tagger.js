@@ -87,7 +87,11 @@ for (const filePath of mp3Files) {
       data: Buffer.from(binaryTraktorData)
     });
 
+    const origStat = fs.statSync(filePath);
     const success = NodeID3.update(tags, filePath);
+    try {
+      fs.utimesSync(filePath, origStat.atime, origStat.mtime);
+    } catch {}
     
     if (success) {
       successCount++;

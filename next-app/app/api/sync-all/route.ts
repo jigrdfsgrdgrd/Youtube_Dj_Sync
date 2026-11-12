@@ -2,13 +2,7 @@ import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
-import fsSync from 'fs';
-
-function getConfigPath(): string {
-  const external = 'C:\\Users\\juliu\\.gemini\\antigravity\\scratch\\spotify-yt-sync\\config.json';
-  if (fsSync.existsSync(external)) return external;
-  return path.join(process.cwd(), 'config.json');
-}
+import { getConfigPath, buildYtDlpArgs } from '@/lib/yt-dlp-helper';
 
 export async function POST() {
   try {
@@ -28,48 +22,24 @@ export async function POST() {
       return NextResponse.json({ error: 'No playlists found in config' }, { status: 400 });
     }
 
-    const destPath = configData.downloads?.destination_path || 'C:\\Users\\juliu\\Music\\DJ_Downloads';
+    const basePath = configData.downloads?.destination_path || 'C:\\Users\\juliu\\Music\\DJ_Downloads';
     const ffmpegPath = configData.downloads?.ffmpeg_path;
     const audioQuality = configData.downloads?.audio_quality || '320';
 
-    const outputTemplate = path.join(destPath, '%(playlist)s', '%(artist,uploader)s - %(title)s.%(ext)s');
-    const archivePath = path.join(destPath, 'archive.txt');
+    // Convert IDs to clean URLs (strip &si=... parameters)
+    const urls = playlistIds.map((rawId: string) => {
+      const cleanId = rawId.split(/[&?#]/)[0].trim();
+      return `https://www.youtube.com/playlist?list=${cleanId}`;
+    });
 
-    // Convert IDs to URLs
-    const urls = playlistIds.map((id: string) => `https://www.youtube.com/playlist?list=${id}`);
+    const args = buildYtDlpArgs({
+      basePath,
+      ffmpegPath,
+      audioQuality,
+      urls
+    });
 
-    const args = [
-      '--format', 'bestaudio',
-      '--extract-audio',
-      '--audio-format', 'mp3',
-      '--audio-quality', `${audioQuality}K`,
-      '--embed-thumbnail',
-      '--embed-metadata',
-      '--no-overwrites',
-      '--remote-components', 'ejs:github',
-      '--extractor-args', 'youtube:player_client=web_embedded,web,tv',
-      '--download-archive', archivePath,
-      '-o', outputTemplate
-    ];
-
-    const denoPath = 'C:\\Users\\juliu\\.deno\\bin\\deno.exe';
-    if (fsSync.existsSync(denoPath)) {
-      args.push('--js-runtimes', `deno:${denoPath}`);
-    }
-
-    const taggerScript = path.join(process.cwd(), 'scripts', 'traktor-tagger.js');
-    if (fsSync.existsSync(taggerScript)) {
-      args.push('--exec', `node "${taggerScript}" {}`);
-    }
-
-    if (ffmpegPath && fsSync.existsSync(ffmpegPath)) {
-      args.push('--ffmpeg-location', ffmpegPath);
-    }
-
-    // Append all URLs at the end
-    args.push(...urls);
-
-    console.log(`Starting bulk sync for ${urls.length} playlists...`);
+    console.log(`Starting 320k CBR bulk sync for ${urls.length} playlists...`);
 
     const ytDlpProcess = spawn('yt-dlp', args);
 
@@ -79,6 +49,7 @@ export async function POST() {
     };
 
     const playlistTotal = urls.length;
+    let playlistSeenCount = 0;
     let playlistCurrent = 1;
     let videoCurrent = 0;
     let videoTotal = 0;
@@ -97,15 +68,16 @@ export async function POST() {
       const text = data.toString();
       console.log(`yt-dlp: ${text.trim()}`);
 
-      const playlistMatch = text.match(/\[download\] Downloading playlist: (.*)/);
+      const playlistMatch = text.match(/\[download\] Downloading playlist: (.*)/i);
       if (playlistMatch) {
-        // Just general logging
+        playlistSeenCount++;
+        playlistCurrent = Math.min(playlistSeenCount, playlistTotal);
       }
 
-      const videoMatch = text.match(/\[download\] Downloading video (\d+) of (\d+)/);
+      const videoMatch = text.match(/\[download\] Downloading (?:video|item) (\d+) of (\d+)/i);
       if (videoMatch) {
-        videoCurrent = parseInt(videoMatch[1]);
-        videoTotal = parseInt(videoMatch[2]);
+        videoCurrent = parseInt(videoMatch[1], 10);
+        videoTotal = parseInt(videoMatch[2], 10);
       }
 
       const match = text.match(/\[download\]\s+(\d+\.?\d*)%.*?ETA\s+([\d:]+)/);

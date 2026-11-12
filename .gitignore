@@ -24,6 +24,8 @@ storage/downloads/*
 
 # Sensitive Credentials / YouTube Auth
 headers_auth.json
+cookies.txt
+next-app/cookies.txt
 .env
 .env*.local
 

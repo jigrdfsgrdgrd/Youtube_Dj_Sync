@@ -131,7 +131,11 @@ async function run() {
         data: Buffer.from(binaryTraktorData)
       });
 
+      const origStat = fs.statSync(fullPath);
       const success = NodeID3.update(tags, fullPath);
+      try {
+        fs.utimesSync(fullPath, origStat.atime, origStat.mtime);
+      } catch {}
       
       if (success) {
         successCount++;

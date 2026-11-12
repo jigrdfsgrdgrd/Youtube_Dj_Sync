@@ -54,6 +54,11 @@ try {
   const success = NodeID3.update(tags, filePath);
   
   if (success) {
+    // Stelle sicher, dass das Datei-Datum exakt auf den heutigen Download-Zeitpunkt gesetzt ist
+    const now = new Date();
+    try {
+      fs.utimesSync(filePath, now, now);
+    } catch {}
     console.log(`Successfully added Traktor hotcue to ${filePath}`);
   } else {
     console.error(`Failed to update ID3 tags for ${filePath}`);
