@@ -49,11 +49,14 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
     '-o', outputTemplate,
   ];
 
-  // Optional: Falls eine cookies.txt (z.B. für YouTube Premium) im App- oder Zielordner liegt
+  // Optional: Falls eine cookies.txt (z.B. für YouTube Premium) im App-, Root- oder Zielordner liegt
   const localCookies = path.join(process.cwd(), 'cookies.txt');
+  const rootCookies = path.join(process.cwd(), '..', 'cookies.txt');
   const destCookies = path.join(basePath, 'cookies.txt');
   if (fsSync.existsSync(localCookies)) {
     args.push('--cookies', localCookies);
+  } else if (fsSync.existsSync(rootCookies)) {
+    args.push('--cookies', rootCookies);
   } else if (fsSync.existsSync(destCookies)) {
     args.push('--cookies', destCookies);
   }
