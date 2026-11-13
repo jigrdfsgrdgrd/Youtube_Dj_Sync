@@ -4,8 +4,12 @@ import { readStatus, cancelDownload } from '@/lib/download-manager';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const status = await readStatus();
-  return NextResponse.json(status);
+  try {
+    const status = await readStatus();
+    return NextResponse.json(status);
+  } catch {
+    return NextResponse.json({ status: 'idle', percentage: 0, playlistName: '', songTitle: '' });
+  }
 }
 
 export async function POST(req: Request) {

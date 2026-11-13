@@ -11,9 +11,11 @@ import {
 } from '@/lib/yt-dlp-helper';
 import {
   cancelDownload,
+  finishDownloadRun,
   hasActiveDownload,
-  isDownloadCancelled,
-  setActiveDownloadRun,
+  IDLE_STATUS,
+  isRunActive,
+  startDownloadRun,
   writeStatus,
 } from '@/lib/download-manager';
 
@@ -33,6 +35,8 @@ interface ConfigShape {
 }
 
 export async function POST(req: Request) {
+  let runId: number | undefined;
+
   try {
     const body = (await req.json().catch(() => ({}))) as { url?: unknown };
     const trimmedUrl = typeof body.url === 'string' ? body.url.trim() : '';
@@ -96,12 +100,16 @@ export async function POST(req: Request) {
       }
     }
 
-    setActiveDownloadRun(true);
+    const activeRunId = startDownloadRun();
+    runId = activeRunId;
+
     await writeStatus(
       {
         status: 'downloading',
         percentage: 0,
         eta: '...',
+        playlistName: '',
+        songTitle: 'Initialisiere...',
         videoCurrent: 0,
         videoTotal: 0,
         phase: playlistId ? 'Checking playlist...' : 'Starting download...',
@@ -122,22 +130,14 @@ export async function POST(req: Request) {
             basePath,
             archivedIds,
             ffmpegPath,
+            runId: activeRunId,
           });
 
-          if (isDownloadCancelled()) return;
+          if (!isRunActive(activeRunId)) return;
 
           if (!resolved.error) {
             if (resolved.tracks.length === 0) {
-              await writeStatus(
-                {
-                  status: 'idle',
-                  percentage: 100,
-                  eta: '',
-                  videoCurrent: 0,
-                  videoTotal: 0,
-                },
-                { immediate: true }
-              );
+              await writeStatus({ ...IDLE_STATUS, percentage: 100 }, { immediate: true });
               return;
             }
 
@@ -147,18 +147,16 @@ export async function POST(req: Request) {
               ffmpegPath,
               audioQuality,
               concurrency,
+              runId: activeRunId,
             });
 
-            if (poolResult.cancelled || isDownloadCancelled()) return;
+            if (poolResult.cancelled || !isRunActive(activeRunId)) return;
 
             if (poolResult.succeeded === 0 && poolResult.failed > 0) {
               await writeStatus(
                 {
+                  ...IDLE_STATUS,
                   status: 'error',
-                  percentage: 0,
-                  eta: '',
-                  videoCurrent: 0,
-                  videoTotal: 0,
                   error: poolResult.errors[0] || 'Download failed',
                 },
                 { immediate: true }
@@ -166,16 +164,7 @@ export async function POST(req: Request) {
               return;
             }
 
-            await writeStatus(
-              {
-                status: 'idle',
-                percentage: 100,
-                eta: '',
-                videoCurrent: 0,
-                videoTotal: 0,
-              },
-              { immediate: true }
-            );
+            await writeStatus({ ...IDLE_STATUS, percentage: 100 }, { immediate: true });
             return;
           }
 
@@ -184,6 +173,8 @@ export async function POST(req: Request) {
           );
         }
 
+        let playlistName = '';
+        let songTitle = '';
         let videoCurrent = 0;
         let videoTotal = 0;
         let latestPercentage = 0;
@@ -195,7 +186,14 @@ export async function POST(req: Request) {
           ffmpegPath,
           audioQuality,
           noPlaylist: !playlistId,
+          runId: activeRunId,
           callbacks: {
+            onPlaylist: (title) => {
+              playlistName = title;
+            },
+            onSongTitle: (title) => {
+              songTitle = title;
+            },
             onItem: (current, total) => {
               videoCurrent = current;
               videoTotal = total;
@@ -203,20 +201,26 @@ export async function POST(req: Request) {
             onProgress: (percentage, eta) => {
               latestPercentage = percentage;
               latestEta = eta;
+              if (!isRunActive(activeRunId)) return;
               void writeStatus({
                 status: 'downloading',
                 percentage,
                 eta,
+                playlistName,
+                songTitle,
                 videoCurrent,
                 videoTotal,
                 phase: 'Downloading',
               });
             },
             onPhase: (phase) => {
+              if (!isRunActive(activeRunId)) return;
               void writeStatus({
                 status: 'downloading',
                 percentage: latestPercentage,
                 eta: latestEta,
+                playlistName,
+                songTitle,
                 videoCurrent,
                 videoTotal,
                 phase,
@@ -225,16 +229,13 @@ export async function POST(req: Request) {
           },
         });
 
-        if (singleResult.cancelled || isDownloadCancelled()) return;
+        if (singleResult.cancelled || !isRunActive(activeRunId)) return;
 
         if (!singleResult.ok) {
           await writeStatus(
             {
+              ...IDLE_STATUS,
               status: 'error',
-              percentage: 0,
-              eta: '',
-              videoCurrent: 0,
-              videoTotal: 0,
               error: singleResult.error || 'Download failed',
             },
             { immediate: true }
@@ -242,47 +243,34 @@ export async function POST(req: Request) {
           return;
         }
 
-        await writeStatus(
-          {
-            status: 'idle',
-            percentage: 100,
-            eta: '',
-            videoCurrent: 0,
-            videoTotal: 0,
-          },
-          { immediate: true }
-        );
+        await writeStatus({ ...IDLE_STATUS, percentage: 100 }, { immediate: true });
       } catch (err) {
         console.error('Background download error:', err);
-        if (!isDownloadCancelled()) {
+        if (isRunActive(activeRunId)) {
           await writeStatus(
             {
+              ...IDLE_STATUS,
               status: 'error',
-              percentage: 0,
-              eta: '',
-              videoCurrent: 0,
-              videoTotal: 0,
               error: err instanceof Error ? err.message : 'Download failed',
             },
             { immediate: true }
           );
         }
       } finally {
-        setActiveDownloadRun(false);
+        finishDownloadRun(activeRunId);
       }
     })();
 
     return NextResponse.json({ success: true, message: 'Download started in background' });
   } catch (error) {
     console.error('Error starting download:', error);
-    setActiveDownloadRun(false);
+    if (runId !== undefined) {
+      finishDownloadRun(runId);
+    }
     await writeStatus(
       {
+        ...IDLE_STATUS,
         status: 'error',
-        percentage: 0,
-        eta: '',
-        videoCurrent: 0,
-        videoTotal: 0,
         error: error instanceof Error ? error.message : 'Failed to start download',
       },
       { immediate: true }

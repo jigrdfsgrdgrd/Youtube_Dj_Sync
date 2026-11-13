@@ -7,6 +7,8 @@ export interface DownloadStatus {
   status: 'idle' | 'downloading' | 'error';
   percentage: number;
   eta: string;
+  playlistName?: string;
+  songTitle?: string;
   videoCurrent?: number;
   videoTotal?: number;
   playlistCurrent?: number;
@@ -15,10 +17,12 @@ export interface DownloadStatus {
   phase?: string;
 }
 
-const DEFAULT_IDLE_STATUS: DownloadStatus = {
+export const IDLE_STATUS: DownloadStatus = {
   status: 'idle',
   percentage: 0,
   eta: '',
+  playlistName: '',
+  songTitle: '',
   videoCurrent: 0,
   videoTotal: 0,
 };
@@ -46,6 +50,7 @@ declare global {
   var __activeDownloadProcess: ChildProcess | null | undefined;
   var __activeDownloadProcesses: Set<ChildProcess> | undefined;
   var __activeDownloadRun: boolean | undefined;
+  var __activeDownloadRunId: number | undefined;
   var __downloadCancelled: boolean | undefined;
   var __liveDownloadStatus: DownloadStatus | undefined;
   var __lastStatusDiskWriteAt: number | undefined;
@@ -107,10 +112,29 @@ export function removeActiveProcess(proc: ChildProcess) {
   }
 }
 
+export function startDownloadRun(): number {
+  const nextId = (global.__activeDownloadRunId ?? 0) + 1;
+  global.__activeDownloadRunId = nextId;
+  global.__activeDownloadRun = true;
+  global.__downloadCancelled = false;
+  return nextId;
+}
+
+export function finishDownloadRun(runId: number): void {
+  if (global.__activeDownloadRunId === runId) {
+    global.__activeDownloadRun = false;
+  }
+}
+
+export function isRunActive(runId: number): boolean {
+  return !isDownloadCancelled() && global.__activeDownloadRunId === runId;
+}
+
 export function setActiveDownloadRun(active: boolean) {
-  global.__activeDownloadRun = active;
   if (active) {
-    global.__downloadCancelled = false;
+    startDownloadRun();
+  } else {
+    global.__activeDownloadRun = false;
   }
 }
 
@@ -123,7 +147,7 @@ async function atomicWriteFile(targetPath: string, content: string): Promise<voi
   try {
     await fs.writeFile(tmpPath, content, 'utf-8');
     await fs.rename(tmpPath, targetPath);
-  } catch (err) {
+  } catch {
     try {
       await fs.unlink(tmpPath);
     } catch {
@@ -131,9 +155,6 @@ async function atomicWriteFile(targetPath: string, content: string): Promise<voi
     }
     // Fallback if Windows antivirus locks rename target briefly
     await fs.writeFile(targetPath, content, 'utf-8');
-    if (err && process.env.NODE_ENV === 'development') {
-      // Fallback succeeded; no-op
-    }
   }
 }
 
@@ -209,7 +230,7 @@ export async function readStatus(): Promise<DownloadStatus> {
       console.warn(
         '[DownloadManager] Stale in-memory downloading state without active process. Auto-healing to idle.'
       );
-      const healed = { ...DEFAULT_IDLE_STATUS };
+      const healed = { ...IDLE_STATUS };
       await writeStatus(healed, { immediate: true });
       return healed;
     }
@@ -227,7 +248,7 @@ export async function readStatus(): Promise<DownloadStatus> {
       console.warn(
         '[DownloadManager] Stale downloading state detected without active process. Auto-healing to idle.'
       );
-      const idleState = { ...DEFAULT_IDLE_STATUS };
+      const idleState = { ...IDLE_STATUS };
       await writeStatus(idleState, { immediate: true });
       return idleState;
     }
@@ -235,7 +256,7 @@ export async function readStatus(): Promise<DownloadStatus> {
     global.__liveDownloadStatus = data;
     return { ...data };
   } catch {
-    return { status: 'idle', percentage: 0, eta: '' };
+    return { ...IDLE_STATUS };
   }
 }
 
@@ -272,7 +293,6 @@ function killProcessAndAwaitExit(proc: ChildProcess, timeoutMs = 5000): Promise<
           if (err && proc.exitCode === null) {
             console.warn(`taskkill warning for PID ${proc.pid}:`, err.message);
           }
-          // Wait briefly for close/exit event, or settle shortly after taskkill completes
           setTimeout(finish, 150);
         });
       } else {
@@ -308,12 +328,21 @@ export async function cancelDownload(): Promise<void> {
   getProcessSet().clear();
   global.__activeDownloadProcess = null;
 
-  await writeStatus({ ...DEFAULT_IDLE_STATUS }, { immediate: true });
+  await writeStatus({ ...IDLE_STATUS }, { immediate: true });
 }
 
 export type YtDlpParsedEvent =
   | { type: 'playlist'; title: string }
   | { type: 'item'; current: number; total: number }
+  | {
+      type: 'dj_progress';
+      playlistName?: string;
+      songTitle?: string;
+      percentage?: number;
+      eta?: string;
+    }
+  | { type: 'song_title'; songTitle: string }
+  | { type: 'archived' }
   | { type: 'progress'; percentage: number; eta: string }
   | { type: 'phase'; phase: string }
   | { type: 'filepath'; filePath: string }
@@ -335,7 +364,6 @@ export function createLineBuffer(onLine: (line: string) => void): {
         if (line.length > 0) {
           onLine(line);
         }
-        // Skip paired \r\n
         if (ch === '\r' && buffer[i + 1] === '\n') {
           i++;
         }
@@ -366,6 +394,26 @@ export function parseYtDlpLine(line: string): YtDlpParsedEvent | null {
     }
   }
 
+  const djProgressMatch = line.match(
+    /\[dj_progress\]\s*([^|\r\n]*?)\s*\|\s*([^|\r\n]*?)\s*\|\s*([^|\r\n]*?)(?:\s*\|\s*([^|\r\n]*))?$/i
+  );
+  if (djProgressMatch) {
+    const rawPlaylist = djProgressMatch[1].trim();
+    const rawSong = djProgressMatch[2].trim();
+    const rawPct = djProgressMatch[3].trim();
+    const rawEta = djProgressMatch[4]?.trim();
+    const pctMatch = rawPct.match(/(\d+(?:\.\d+)?)/);
+    const parsedPct = pctMatch ? parseFloat(pctMatch[1]) : undefined;
+
+    return {
+      type: 'dj_progress',
+      playlistName: rawPlaylist && rawPlaylist !== 'NA' ? rawPlaylist : undefined,
+      songTitle: rawSong && rawSong !== 'NA' ? rawSong : undefined,
+      percentage: parsedPct !== undefined && !Number.isNaN(parsedPct) ? parsedPct : undefined,
+      eta: rawEta && rawEta !== 'NA' && rawEta !== 'Unknown' ? rawEta : undefined,
+    };
+  }
+
   const playlistMatch = line.match(/\[download\]\s+Downloading playlist:\s*(.+)/i);
   if (playlistMatch) {
     return { type: 'playlist', title: playlistMatch[1].trim() };
@@ -378,6 +426,18 @@ export function parseYtDlpLine(line: string): YtDlpParsedEvent | null {
       current: parseInt(itemMatch[1], 10),
       total: parseInt(itemMatch[2], 10),
     };
+  }
+
+  const archiveMatch = line.match(
+    /\[download\]\s+[a-zA-Z0-9_-]{11}:\s+(.+?)\s+has already been recorded in the archive/i
+  );
+  if (archiveMatch) {
+    return { type: 'archived' };
+  }
+
+  const destMatch = line.match(/\[download\]\s+Destination:\s*(?:.*[\\/])?([^\\/]+)\.[a-zA-Z0-9]+$/i);
+  if (destMatch) {
+    return { type: 'song_title', songTitle: destMatch[1].trim() };
   }
 
   const progressMatch = line.match(/\[download\]\s+(\d+(?:\.\d+)?)%.*?ETA\s+([^\s]+)/i);

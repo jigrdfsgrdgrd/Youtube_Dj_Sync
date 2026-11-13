@@ -6,6 +6,7 @@ import {
   addActiveProcess,
   createLineBuffer,
   isDownloadCancelled,
+  isRunActive,
   parseYtDlpLine,
   removeActiveProcess,
   writeStatus,
@@ -161,6 +162,9 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
     '--embed-metadata',
     // WICHTIG: Dateidatum = heutiges Download-Datum (nicht das alte YouTube-Upload-Datum!)
     '--no-mtime',
+    // Einzelne gelöschte oder gesperrte Videos überspringen, damit die restliche Playlist durchläuft
+    '--ignore-errors',
+    '--no-abort-on-error',
     // Hotcue- & Duplikat-Schutz
     '--no-overwrites',
     '--download-archive',
@@ -178,6 +182,9 @@ export function buildYtDlpArgs(opts: YtDlpOptions): string[] {
     // --print impliziert --quiet; --no-quiet & --newline erhalten Live-Progress & Phasen
     '--no-quiet',
     '--newline',
+    // Live-Fortschritt mit Playlist-, Song-Titel, Prozent & ETA für das UI ausgeben
+    '--progress-template',
+    'download:[dj_progress] %(info.playlist_title,info.playlist|NA)s | %(info.title)s | %(progress._percent_str)s | %(progress._eta_str|...)s',
     '--print',
     `after_move:${FILEPATH_PRINT_PREFIX}%(filepath)s`,
     // Bereinige "- Topic" bei YouTube-Music-Channels & unnötige Video-Zusätze im Titel
@@ -248,12 +255,16 @@ export function resolveUnarchivedPlaylistTracks(params: {
   basePath: string;
   archivedIds: Set<string>;
   ffmpegPath?: string;
+  runId?: number;
 }): Promise<ResolvedPlaylist> {
-  const { playlistId, basePath, archivedIds, ffmpegPath } = params;
+  const { playlistId, basePath, archivedIds, ffmpegPath, runId } = params;
   const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
 
+  const stillActive = () =>
+    runId !== undefined ? isRunActive(runId) : !isDownloadCancelled();
+
   return new Promise((resolve) => {
-    if (isDownloadCancelled()) {
+    if (!stillActive()) {
       resolve({
         playlistId,
         playlistTitle: playlistId,
@@ -305,7 +316,7 @@ export function resolveUnarchivedPlaylistTracks(params: {
 
     proc.on('close', (code) => {
       removeActiveProcess(proc);
-      if (isDownloadCancelled()) {
+      if (!stillActive()) {
         resolve({
           playlistId,
           playlistTitle: playlistId,
@@ -391,6 +402,7 @@ export interface DownloadTargetCallbacks {
   onPhase?: (phase: string) => void;
   onItem?: (current: number, total: number) => void;
   onPlaylist?: (title: string) => void;
+  onSongTitle?: (title: string) => void;
 }
 
 export async function downloadSingleTarget(params: {
@@ -400,11 +412,16 @@ export async function downloadSingleTarget(params: {
   audioQuality?: string;
   outputDir?: string;
   noPlaylist?: boolean;
+  runId?: number;
   callbacks?: DownloadTargetCallbacks;
 }): Promise<SingleTargetResult> {
-  const { url, basePath, ffmpegPath, audioQuality, outputDir, noPlaylist, callbacks } = params;
+  const { url, basePath, ffmpegPath, audioQuality, outputDir, noPlaylist, runId, callbacks } =
+    params;
 
-  if (isDownloadCancelled()) {
+  const stillActive = () =>
+    runId !== undefined ? isRunActive(runId) : !isDownloadCancelled();
+
+  if (!stillActive()) {
     return { ok: false, taggedCount: 0, cancelled: true };
   }
 
@@ -427,6 +444,7 @@ export async function downloadSingleTarget(params: {
 
     const taggingPromises: Promise<boolean>[] = [];
     let lastError = '';
+    let sawArchived = false;
 
     const stdoutBuf = createLineBuffer((line) => {
       const ev = parseYtDlpLine(line);
@@ -438,6 +456,19 @@ export async function downloadSingleTarget(params: {
           break;
         case 'item':
           callbacks?.onItem?.(ev.current, ev.total);
+          break;
+        case 'dj_progress':
+          if (ev.playlistName) callbacks?.onPlaylist?.(ev.playlistName);
+          if (ev.songTitle) callbacks?.onSongTitle?.(ev.songTitle);
+          if (ev.percentage !== undefined) {
+            callbacks?.onProgress?.(ev.percentage, ev.eta ?? '...');
+          }
+          break;
+        case 'song_title':
+          callbacks?.onSongTitle?.(ev.songTitle);
+          break;
+        case 'archived':
+          sawArchived = true;
           break;
         case 'progress':
           callbacks?.onProgress?.(ev.percentage, ev.eta);
@@ -484,8 +515,18 @@ export async function downloadSingleTarget(params: {
 
       await Promise.all(taggingPromises);
 
-      if (isDownloadCancelled()) {
+      if (!stillActive()) {
         resolve({ ok: false, taggedCount: taggingPromises.length, cancelled: true });
+        return;
+      }
+
+      // With --ignore-errors, yt-dlp can exit 0 even if a single video failed
+      if (code === 0 && lastError && taggingPromises.length === 0 && !sawArchived) {
+        resolve({
+          ok: false,
+          taggedCount: 0,
+          error: lastError,
+        });
         return;
       }
 
@@ -505,15 +546,19 @@ export async function downloadSingleTarget(params: {
 export async function runWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
-  worker: (item: T, index: number) => Promise<R>
+  worker: (item: T, index: number) => Promise<R>,
+  runId?: number
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let nextIndex = 0;
   const workerCount = Math.max(1, Math.min(concurrency, items.length));
 
+  const stillActive = () =>
+    runId !== undefined ? isRunActive(runId) : !isDownloadCancelled();
+
   const runners = Array.from({ length: workerCount }, async () => {
     while (nextIndex < items.length) {
-      if (isDownloadCancelled()) break;
+      if (!stillActive()) break;
       const currentIndex = nextIndex++;
       results[currentIndex] = await worker(items[currentIndex], currentIndex);
     }
@@ -541,6 +586,7 @@ export async function runParallelTrackPool(params: {
   audioQuality?: string;
   playlistTotal?: number;
   concurrency?: number;
+  runId?: number;
 }): Promise<PoolRunResult> {
   const {
     tracks,
@@ -549,7 +595,11 @@ export async function runParallelTrackPool(params: {
     audioQuality,
     playlistTotal,
     concurrency = 3,
+    runId,
   } = params;
+
+  const stillActive = () =>
+    runId !== undefined ? isRunActive(runId) : !isDownloadCancelled();
 
   const total = tracks.length;
   if (total === 0) {
@@ -563,10 +613,12 @@ export async function runParallelTrackPool(params: {
   const errors: string[] = [];
   let latestEta = '...';
   let latestPhase = 'Downloading...';
+  let latestPlaylistName = tracks[0]?.playlistTitle ?? '';
+  let latestSongTitle = tracks[0]?.title ?? '';
   let highestPlaylistIndex = playlistTotal ? 1 : undefined;
 
   const pushAggregateStatus = () => {
-    if (isDownloadCancelled()) return;
+    if (!stillActive()) return;
 
     let progressSum = completedCount * 100;
     for (const pct of activeProgress.values()) {
@@ -578,6 +630,8 @@ export async function runParallelTrackPool(params: {
       status: 'downloading',
       percentage,
       eta: latestEta,
+      playlistName: latestPlaylistName,
+      songTitle: latestSongTitle,
       videoCurrent: Math.min(completedCount + 1, total),
       videoTotal: total,
       ...(playlistTotal !== undefined
@@ -587,58 +641,72 @@ export async function runParallelTrackPool(params: {
     });
   };
 
-  await runWithConcurrency(tracks, concurrency, async (track, idx) => {
-    if (isDownloadCancelled()) return;
+  await runWithConcurrency(
+    tracks,
+    concurrency,
+    async (track, idx) => {
+      if (!stillActive()) return;
 
-    activeProgress.set(idx, 0);
-    if (track.playlistIndex && highestPlaylistIndex !== undefined) {
-      highestPlaylistIndex = Math.max(highestPlaylistIndex, track.playlistIndex);
-    }
-    pushAggregateStatus();
-
-    const result = await downloadSingleTarget({
-      url: track.url,
-      basePath,
-      ffmpegPath,
-      audioQuality,
-      outputDir: track.outputDir,
-      noPlaylist: true,
-      callbacks: {
-        onProgress: (pct, eta) => {
-          activeProgress.set(idx, pct);
-          if (eta && eta !== 'Unknown') {
-            latestEta = eta;
-          }
-          latestPhase = 'Downloading';
-          pushAggregateStatus();
-        },
-        onPhase: (phase) => {
-          latestPhase = phase;
-          pushAggregateStatus();
-        },
-      },
-    });
-
-    activeProgress.delete(idx);
-    completedCount++;
-
-    if (result.cancelled || isDownloadCancelled()) return;
-
-    if (result.ok) {
-      succeeded++;
-    } else {
-      failed++;
-      if (result.error) {
-        errors.push(`${track.title}: ${result.error}`);
+      activeProgress.set(idx, 0);
+      latestPlaylistName = track.playlistTitle;
+      latestSongTitle = track.title;
+      if (track.playlistIndex && highestPlaylistIndex !== undefined) {
+        highestPlaylistIndex = Math.max(highestPlaylistIndex, track.playlistIndex);
       }
-    }
-    pushAggregateStatus();
-  });
+      pushAggregateStatus();
+
+      const result = await downloadSingleTarget({
+        url: track.url,
+        basePath,
+        ffmpegPath,
+        audioQuality,
+        outputDir: track.outputDir,
+        noPlaylist: true,
+        runId,
+        callbacks: {
+          onPlaylist: (title) => {
+            if (title) latestPlaylistName = title;
+          },
+          onSongTitle: (title) => {
+            if (title) latestSongTitle = title;
+          },
+          onProgress: (pct, eta) => {
+            activeProgress.set(idx, pct);
+            if (eta && eta !== 'Unknown') {
+              latestEta = eta;
+            }
+            latestPhase = 'Downloading';
+            pushAggregateStatus();
+          },
+          onPhase: (phase) => {
+            latestPhase = phase;
+            pushAggregateStatus();
+          },
+        },
+      });
+
+      activeProgress.delete(idx);
+      completedCount++;
+
+      if (result.cancelled || !stillActive()) return;
+
+      if (result.ok) {
+        succeeded++;
+      } else {
+        failed++;
+        if (result.error) {
+          errors.push(`${track.title}: ${result.error}`);
+        }
+      }
+      pushAggregateStatus();
+    },
+    runId
+  );
 
   return {
     succeeded,
     failed,
     errors,
-    cancelled: isDownloadCancelled(),
+    cancelled: !stillActive(),
   };
 }

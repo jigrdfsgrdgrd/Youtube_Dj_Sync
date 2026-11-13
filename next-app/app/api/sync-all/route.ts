@@ -12,9 +12,11 @@ import {
 } from '@/lib/yt-dlp-helper';
 import {
   cancelDownload,
+  finishDownloadRun,
   hasActiveDownload,
-  isDownloadCancelled,
-  setActiveDownloadRun,
+  IDLE_STATUS,
+  isRunActive,
+  startDownloadRun,
   writeStatus,
 } from '@/lib/download-manager';
 
@@ -34,6 +36,8 @@ interface ConfigShape {
 }
 
 export async function POST() {
+  let runId: number | undefined;
+
   try {
     const configPath = getConfigPath();
     let configData: ConfigShape;
@@ -97,7 +101,8 @@ export async function POST() {
         ? Math.floor(configData.downloads.concurrency)
         : 3;
 
-    setActiveDownloadRun(true);
+    const activeRunId = startDownloadRun();
+    runId = activeRunId;
     const playlistTotal = validIds.length;
 
     await writeStatus(
@@ -105,6 +110,8 @@ export async function POST() {
         status: 'downloading',
         percentage: 0,
         eta: '...',
+        playlistName: '',
+        songTitle: 'Initialisiere...',
         videoCurrent: 0,
         videoTotal: 0,
         playlistCurrent: 1,
@@ -132,13 +139,16 @@ export async function POST() {
               basePath,
               archivedIds,
               ffmpegPath,
+              runId: activeRunId,
             });
             resolvedCount++;
-            if (!isDownloadCancelled()) {
+            if (isRunActive(activeRunId)) {
               void writeStatus({
                 status: 'downloading',
                 percentage: 0,
                 eta: '...',
+                playlistName: res.playlistTitle || '',
+                songTitle: 'Prüfe Playlists...',
                 videoCurrent: 0,
                 videoTotal: 0,
                 playlistCurrent: Math.min(resolvedCount, playlistTotal),
@@ -147,10 +157,11 @@ export async function POST() {
               });
             }
             return res;
-          }
+          },
+          activeRunId
         );
 
-        if (isDownloadCancelled()) return;
+        if (!isRunActive(activeRunId)) return;
 
         const queuedTracks: QueuedTrack[] = [];
         const queuedVideoIds = new Set<string>();
@@ -178,11 +189,8 @@ export async function POST() {
           if (resolveErrors.length === validIds.length && resolveErrors.length > 0) {
             await writeStatus(
               {
+                ...IDLE_STATUS,
                 status: 'error',
-                percentage: 0,
-                eta: '',
-                videoCurrent: 0,
-                videoTotal: 0,
                 playlistCurrent: 0,
                 playlistTotal: 0,
                 error: resolveErrors[0],
@@ -195,11 +203,8 @@ export async function POST() {
           console.log('[sync-all] All playlists already up to date (0 unarchived tracks).');
           await writeStatus(
             {
-              status: 'idle',
+              ...IDLE_STATUS,
               percentage: 100,
-              eta: '',
-              videoCurrent: 0,
-              videoTotal: 0,
               playlistCurrent: 0,
               playlistTotal: 0,
             },
@@ -219,18 +224,16 @@ export async function POST() {
           audioQuality,
           playlistTotal,
           concurrency,
+          runId: activeRunId,
         });
 
-        if (poolResult.cancelled || isDownloadCancelled()) return;
+        if (poolResult.cancelled || !isRunActive(activeRunId)) return;
 
         if (poolResult.succeeded === 0 && poolResult.failed > 0) {
           await writeStatus(
             {
+              ...IDLE_STATUS,
               status: 'error',
-              percentage: 0,
-              eta: '',
-              videoCurrent: 0,
-              videoTotal: 0,
               playlistCurrent: 0,
               playlistTotal: 0,
               error: poolResult.errors[0] || 'Bulk sync failed',
@@ -242,11 +245,8 @@ export async function POST() {
 
         await writeStatus(
           {
-            status: 'idle',
+            ...IDLE_STATUS,
             percentage: 100,
-            eta: '',
-            videoCurrent: 0,
-            videoTotal: 0,
             playlistCurrent: 0,
             playlistTotal: 0,
           },
@@ -254,14 +254,11 @@ export async function POST() {
         );
       } catch (err) {
         console.error('Background bulk sync error:', err);
-        if (!isDownloadCancelled()) {
+        if (isRunActive(activeRunId)) {
           await writeStatus(
             {
+              ...IDLE_STATUS,
               status: 'error',
-              percentage: 0,
-              eta: '',
-              videoCurrent: 0,
-              videoTotal: 0,
               playlistCurrent: 0,
               playlistTotal: 0,
               error: err instanceof Error ? err.message : 'Bulk sync failed',
@@ -270,21 +267,20 @@ export async function POST() {
           );
         }
       } finally {
-        setActiveDownloadRun(false);
+        finishDownloadRun(activeRunId);
       }
     })();
 
     return NextResponse.json({ success: true, message: 'Bulk sync started in background' });
   } catch (error) {
     console.error('Error starting bulk sync:', error);
-    setActiveDownloadRun(false);
+    if (runId !== undefined) {
+      finishDownloadRun(runId);
+    }
     await writeStatus(
       {
+        ...IDLE_STATUS,
         status: 'error',
-        percentage: 0,
-        eta: '',
-        videoCurrent: 0,
-        videoTotal: 0,
         playlistCurrent: 0,
         playlistTotal: 0,
         error: error instanceof Error ? error.message : 'Failed to start bulk sync',
