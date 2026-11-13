@@ -1,53 +1,90 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
 import fsPromises from 'fs/promises';
 import path from 'path';
 
 function getCookiePaths(): { local: string; root: string } {
   return {
     local: path.join(process.cwd(), 'cookies.txt'),
-    root: path.join(process.cwd(), '..', 'cookies.txt')
+    root: path.join(process.cwd(), '..', 'cookies.txt'),
   };
 }
 
-function findExistingCookiePath(): string | null {
+async function findExistingCookiePath(): Promise<string | null> {
   const paths = getCookiePaths();
-  if (fs.existsSync(paths.local)) return paths.local;
-  if (fs.existsSync(paths.root)) return paths.root;
+  for (const candidate of [paths.local, paths.root]) {
+    try {
+      await fsPromises.access(candidate);
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
   return null;
+}
+
+function analyzeCookieContent(content: string): {
+  cookieCount: number;
+  hasYoutube: boolean;
+  hasAuth: boolean;
+} {
+  let cookieCount = 0;
+  let hasYoutube = false;
+  let hasAuth = false;
+
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    cookieCount++;
+
+    if (!hasYoutube && line.toLowerCase().includes('youtube.com')) {
+      hasYoutube = true;
+    }
+    if (
+      !hasAuth &&
+      (line.includes('SAPISID') ||
+        line.includes('LOGIN_INFO') ||
+        line.includes('__Secure-3PAPISID') ||
+        line.includes('SID'))
+    ) {
+      hasAuth = true;
+    }
+  }
+
+  return { cookieCount, hasYoutube, hasAuth };
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 export async function GET() {
   try {
-    const existingPath = findExistingCookiePath();
+    const existingPath = await findExistingCookiePath();
     if (!existingPath) {
       return NextResponse.json({ exists: false });
     }
 
-    const stat = await fsPromises.stat(existingPath);
-    const content = await fsPromises.readFile(existingPath, 'utf-8');
-    const lines = content.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
-
-    const hasYoutube = lines.some(l => l.toLowerCase().includes('youtube.com'));
-    const hasAuth = lines.some(l => 
-      l.includes('SAPISID') || 
-      l.includes('LOGIN_INFO') || 
-      l.includes('__Secure-3PAPISID') || 
-      l.includes('SID')
-    );
+    const [stat, content] = await Promise.all([
+      fsPromises.stat(existingPath),
+      fsPromises.readFile(existingPath, 'utf-8'),
+    ]);
+    const { cookieCount, hasYoutube, hasAuth } = analyzeCookieContent(content);
 
     return NextResponse.json({
       exists: true,
       path: path.basename(existingPath),
       sizeBytes: stat.size,
       updatedAt: stat.mtime.toLocaleString('de-DE'),
-      cookieCount: lines.length,
+      cookieCount,
       hasYoutube,
-      hasAuth
+      hasAuth,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error reading cookie status:', error);
-    return NextResponse.json({ exists: false, error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { exists: false, error: getErrorMessage(error, 'Failed to read cookie status') },
+      { status: 500 }
+    );
   }
 }
 
@@ -68,19 +105,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Die Cookie-Datei ist leer.' }, { status: 400 });
     }
 
-    const lines = content.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
-    const hasYoutube = lines.some(l => l.toLowerCase().includes('youtube.com'));
+    const { cookieCount, hasYoutube, hasAuth } = analyzeCookieContent(content);
 
     const savePath = path.join(process.cwd(), 'cookies.txt');
     await fsPromises.writeFile(savePath, buffer);
-
     const stat = await fsPromises.stat(savePath);
-    const hasAuth = lines.some(l => 
-      l.includes('SAPISID') || 
-      l.includes('LOGIN_INFO') || 
-      l.includes('__Secure-3PAPISID') || 
-      l.includes('SID')
-    );
 
     return NextResponse.json({
       success: true,
@@ -88,28 +117,43 @@ export async function POST(req: NextRequest) {
       path: 'cookies.txt',
       sizeBytes: stat.size,
       updatedAt: stat.mtime.toLocaleString('de-DE'),
-      cookieCount: lines.length,
+      cookieCount,
       hasYoutube,
       hasAuth,
-      message: hasYoutube 
-        ? 'Cookie-Datei erfolgreich gespeichert und aktiv.' 
-        : 'Datei gespeichert, enthält jedoch keine youtube.com-Einträge.'
+      message: hasYoutube
+        ? 'Cookie-Datei erfolgreich gespeichert und aktiv.'
+        : 'Datei gespeichert, enthält jedoch keine youtube.com-Einträge.',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error uploading cookies:', error);
-    return NextResponse.json({ error: error.message || 'Fehler beim Hochladen' }, { status: 500 });
+    return NextResponse.json(
+      { error: getErrorMessage(error, 'Fehler beim Hochladen') },
+      { status: 500 }
+    );
   }
 }
 
 export async function DELETE() {
   try {
     const paths = getCookiePaths();
-    if (fs.existsSync(paths.local)) await fsPromises.unlink(paths.local);
-    if (fs.existsSync(paths.root)) await fsPromises.unlink(paths.root);
+    await Promise.all(
+      [paths.local, paths.root].map(async (targetPath) => {
+        try {
+          await fsPromises.unlink(targetPath);
+        } catch (error: unknown) {
+          if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+            throw error;
+          }
+        }
+      })
+    );
 
     return NextResponse.json({ success: true, message: 'Cookies entfernt.' });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error deleting cookies:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: getErrorMessage(error, 'Fehler beim Entfernen') },
+      { status: 500 }
+    );
   }
 }

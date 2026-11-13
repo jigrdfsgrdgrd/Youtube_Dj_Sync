@@ -1,144 +1,296 @@
 import { NextResponse } from 'next/server';
-import { spawn } from 'child_process';
 import fs from 'fs/promises';
-import { getConfigPath, buildYtDlpArgs } from '@/lib/yt-dlp-helper';
-import { setActiveProcess, writeStatus, getActiveProcess, cancelDownload } from '@/lib/download-manager';
+import path from 'path';
+import {
+  extractCleanPlaylistId,
+  getConfigPath,
+  QueuedTrack,
+  readArchivedIds,
+  resolveUnarchivedPlaylistTracks,
+  runParallelTrackPool,
+  runWithConcurrency,
+} from '@/lib/yt-dlp-helper';
+import {
+  cancelDownload,
+  hasActiveDownload,
+  isDownloadCancelled,
+  setActiveDownloadRun,
+  writeStatus,
+} from '@/lib/download-manager';
+
+interface ConfigShape {
+  youtube_music?: {
+    playlist_ids?: string[];
+    [key: string]: unknown;
+  };
+  downloads?: {
+    destination_path?: string;
+    ffmpeg_path?: string;
+    audio_quality?: string;
+    concurrency?: number;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
 
 export async function POST() {
   try {
     const configPath = getConfigPath();
-    let configData;
-    
+    let configData: ConfigShape;
+
     try {
       const file = await fs.readFile(configPath, 'utf-8');
-      configData = JSON.parse(file);
+      configData = JSON.parse(file) as ConfigShape;
     } catch (err) {
       console.error('Failed to read config.json', err);
       return NextResponse.json({ error: 'Config file not found or invalid' }, { status: 500 });
     }
 
-    const playlistIds = configData.youtube_music?.playlist_ids || [];
-    if (playlistIds.length === 0) {
-      return NextResponse.json({ error: 'No playlists found in config' }, { status: 400 });
+    const rawPlaylistIds = Array.isArray(configData.youtube_music?.playlist_ids)
+      ? configData.youtube_music.playlist_ids
+      : [];
+
+    const validIds: string[] = [];
+    const seenIds = new Set<string>();
+    const invalidEntries: string[] = [];
+
+    for (const rawId of rawPlaylistIds) {
+      const cleanId = typeof rawId === 'string' ? extractCleanPlaylistId(rawId) : null;
+      if (!cleanId) {
+        invalidEntries.push(String(rawId));
+        continue;
+      }
+      if (!seenIds.has(cleanId)) {
+        seenIds.add(cleanId);
+        validIds.push(cleanId);
+      }
     }
 
-    if (getActiveProcess()) {
+    if (invalidEntries.length > 0 || validIds.length !== rawPlaylistIds.length) {
+      console.warn(
+        `[sync-all] Cleaned ${rawPlaylistIds.length - validIds.length} invalid/duplicate playlist_ids entry(s):`,
+        invalidEntries
+      );
+      if (configData.youtube_music) {
+        configData.youtube_music.playlist_ids = validIds;
+        await fs.writeFile(configPath, JSON.stringify(configData, null, 2)).catch((err) => {
+          console.warn('[sync-all] Failed to persist cleaned playlist_ids:', err);
+        });
+      }
+    }
+
+    if (validIds.length === 0) {
+      return NextResponse.json({ error: 'No valid playlists found in config' }, { status: 400 });
+    }
+
+    if (hasActiveDownload()) {
       await cancelDownload();
     }
 
     const basePath = configData.downloads?.destination_path || 'C:\\Users\\juliu\\Music\\DJ_Downloads';
     const ffmpegPath = configData.downloads?.ffmpeg_path;
     const audioQuality = configData.downloads?.audio_quality || '320';
+    const concurrency =
+      typeof configData.downloads?.concurrency === 'number' &&
+      configData.downloads.concurrency >= 1 &&
+      configData.downloads.concurrency <= 6
+        ? Math.floor(configData.downloads.concurrency)
+        : 3;
 
-    // Convert IDs to clean URLs (strip &si=... parameters)
-    const urls = playlistIds.map((rawId: string) => {
-      const cleanId = rawId.split(/[&?#]/)[0].trim();
-      return `https://www.youtube.com/playlist?list=${cleanId}`;
-    });
+    setActiveDownloadRun(true);
+    const playlistTotal = validIds.length;
 
-    const args = buildYtDlpArgs({
-      basePath,
-      ffmpegPath,
-      audioQuality,
-      urls
-    });
+    await writeStatus(
+      {
+        status: 'downloading',
+        percentage: 0,
+        eta: '...',
+        videoCurrent: 0,
+        videoTotal: 0,
+        playlistCurrent: 1,
+        playlistTotal,
+        phase: `Checking ${playlistTotal} playlist(s)...`,
+      },
+      { immediate: true }
+    );
 
-    console.log(`Starting 320k CBR bulk sync for ${urls.length} playlists...`);
+    console.log(
+      `Starting ${audioQuality}k CBR parallel bulk sync (${concurrency} workers) for ${playlistTotal} playlist(s)...`
+    );
 
-    const ytDlpProcess = spawn('yt-dlp', args);
-    setActiveProcess(ytDlpProcess);
+    void (async () => {
+      try {
+        const archivedIds = await readArchivedIds(path.join(basePath, 'archive.txt'));
+        let resolvedCount = 0;
 
-    const playlistTotal = urls.length;
-    let playlistSeenCount = 0;
-    let playlistCurrent = 1;
-    let videoCurrent = 0;
-    let videoTotal = 0;
+        const resolvedPlaylists = await runWithConcurrency(
+          validIds,
+          concurrency,
+          async (playlistId) => {
+            const res = await resolveUnarchivedPlaylistTracks({
+              playlistId,
+              basePath,
+              archivedIds,
+              ffmpegPath,
+            });
+            resolvedCount++;
+            if (!isDownloadCancelled()) {
+              void writeStatus({
+                status: 'downloading',
+                percentage: 0,
+                eta: '...',
+                videoCurrent: 0,
+                videoTotal: 0,
+                playlistCurrent: Math.min(resolvedCount, playlistTotal),
+                playlistTotal,
+                phase: `Checking playlists (${resolvedCount}/${playlistTotal})...`,
+              });
+            }
+            return res;
+          }
+        );
 
-    await writeStatus({ 
-      status: 'downloading', 
-      percentage: 0, 
-      eta: '...', 
-      videoCurrent: 0, 
-      videoTotal: 0,
-      playlistCurrent: 1,
-      playlistTotal 
-    });
+        if (isDownloadCancelled()) return;
 
-    ytDlpProcess.stdout.on('data', async (data) => {
-      const text = data.toString();
-      console.log(`yt-dlp: ${text.trim()}`);
+        const queuedTracks: QueuedTrack[] = [];
+        const queuedVideoIds = new Set<string>();
+        const resolveErrors: string[] = [];
 
-      const playlistMatch = text.match(/\[download\] Downloading playlist: (.*)/i);
-      if (playlistMatch) {
-        playlistSeenCount++;
-        playlistCurrent = Math.min(playlistSeenCount, playlistTotal);
-      }
-
-      const videoMatch = text.match(/\[download\] Downloading (?:video|item) (\d+) of (\d+)/i);
-      if (videoMatch) {
-        videoCurrent = parseInt(videoMatch[1], 10);
-        videoTotal = parseInt(videoMatch[2], 10);
-      }
-
-      const match = text.match(/\[download\]\s+(\d+\.?\d*)%.*?ETA\s+([\d:]+)/);
-      if (match) {
-        await writeStatus({
-          status: 'downloading',
-          percentage: parseFloat(match[1]),
-          eta: match[2],
-          videoCurrent,
-          videoTotal,
-          playlistCurrent,
-          playlistTotal
+        resolvedPlaylists.forEach((playlist, index) => {
+          if (!playlist) return;
+          if (playlist.error) {
+            console.warn(
+              `[sync-all] Playlist ${playlist.playlistId} resolution error: ${playlist.error}`
+            );
+            resolveErrors.push(`${playlist.playlistId}: ${playlist.error}`);
+          }
+          for (const track of playlist.tracks) {
+            if (queuedVideoIds.has(track.id)) continue;
+            queuedVideoIds.add(track.id);
+            queuedTracks.push({
+              ...track,
+              playlistIndex: index + 1,
+            });
+          }
         });
+
+        if (queuedTracks.length === 0) {
+          if (resolveErrors.length === validIds.length && resolveErrors.length > 0) {
+            await writeStatus(
+              {
+                status: 'error',
+                percentage: 0,
+                eta: '',
+                videoCurrent: 0,
+                videoTotal: 0,
+                playlistCurrent: 0,
+                playlistTotal: 0,
+                error: resolveErrors[0],
+              },
+              { immediate: true }
+            );
+            return;
+          }
+
+          console.log('[sync-all] All playlists already up to date (0 unarchived tracks).');
+          await writeStatus(
+            {
+              status: 'idle',
+              percentage: 100,
+              eta: '',
+              videoCurrent: 0,
+              videoTotal: 0,
+              playlistCurrent: 0,
+              playlistTotal: 0,
+            },
+            { immediate: true }
+          );
+          return;
+        }
+
+        console.log(
+          `[sync-all] Found ${queuedTracks.length} unarchived track(s) across ${playlistTotal} playlist(s).`
+        );
+
+        const poolResult = await runParallelTrackPool({
+          tracks: queuedTracks,
+          basePath,
+          ffmpegPath,
+          audioQuality,
+          playlistTotal,
+          concurrency,
+        });
+
+        if (poolResult.cancelled || isDownloadCancelled()) return;
+
+        if (poolResult.succeeded === 0 && poolResult.failed > 0) {
+          await writeStatus(
+            {
+              status: 'error',
+              percentage: 0,
+              eta: '',
+              videoCurrent: 0,
+              videoTotal: 0,
+              playlistCurrent: 0,
+              playlistTotal: 0,
+              error: poolResult.errors[0] || 'Bulk sync failed',
+            },
+            { immediate: true }
+          );
+          return;
+        }
+
+        await writeStatus(
+          {
+            status: 'idle',
+            percentage: 100,
+            eta: '',
+            videoCurrent: 0,
+            videoTotal: 0,
+            playlistCurrent: 0,
+            playlistTotal: 0,
+          },
+          { immediate: true }
+        );
+      } catch (err) {
+        console.error('Background bulk sync error:', err);
+        if (!isDownloadCancelled()) {
+          await writeStatus(
+            {
+              status: 'error',
+              percentage: 0,
+              eta: '',
+              videoCurrent: 0,
+              videoTotal: 0,
+              playlistCurrent: 0,
+              playlistTotal: 0,
+              error: err instanceof Error ? err.message : 'Bulk sync failed',
+            },
+            { immediate: true }
+          );
+        }
+      } finally {
+        setActiveDownloadRun(false);
       }
-    });
-
-    ytDlpProcess.stderr.on('data', (data) => {
-      console.error(`yt-dlp error: ${data.toString().trim()}`);
-    });
-
-    ytDlpProcess.on('error', async (err) => {
-      console.error('yt-dlp bulk sync spawn/execution error:', err);
-      setActiveProcess(null);
-      await writeStatus({ 
-        status: 'idle', 
-        percentage: 0, 
-        eta: '', 
-        videoCurrent: 0, 
-        videoTotal: 0,
-        playlistCurrent: 0,
-        playlistTotal: 0
-      });
-    });
-
-    ytDlpProcess.on('close', async (code) => {
-      console.log(`yt-dlp bulk sync process exited with code ${code}`);
-      setActiveProcess(null);
-      await writeStatus({ 
-        status: 'idle', 
-        percentage: 100, 
-        eta: '', 
-        videoCurrent: 0, 
-        videoTotal: 0,
-        playlistCurrent: 0,
-        playlistTotal: 0
-      });
-    });
+    })();
 
     return NextResponse.json({ success: true, message: 'Bulk sync started in background' });
   } catch (error) {
     console.error('Error starting bulk sync:', error);
-    setActiveProcess(null);
-    await writeStatus({ 
-      status: 'idle', 
-      percentage: 0, 
-      eta: '', 
-      videoCurrent: 0, 
-      videoTotal: 0,
-      playlistCurrent: 0,
-      playlistTotal: 0
-    });
+    setActiveDownloadRun(false);
+    await writeStatus(
+      {
+        status: 'error',
+        percentage: 0,
+        eta: '',
+        videoCurrent: 0,
+        videoTotal: 0,
+        playlistCurrent: 0,
+        playlistTotal: 0,
+        error: error instanceof Error ? error.message : 'Failed to start bulk sync',
+      },
+      { immediate: true }
+    );
     return NextResponse.json({ error: 'Failed to start bulk sync' }, { status: 500 });
   }
 }

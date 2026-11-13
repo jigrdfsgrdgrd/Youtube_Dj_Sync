@@ -83,13 +83,14 @@ async function run() {
       continue;
     }
 
-    // Entferne alte generierte Hotcues 1 bis 4 (und behalte Grid-Marker etc.)
-    entry.CUE_V2 = entry.CUE_V2.filter(c => {
-      const hc = parseInt(c.$.HOTCUE);
+    // Entferne alte generierte Hotcues 0 bis 3 (entspricht hotcue - 1, behalte Grid-Marker etc.)
+    entry.CUE_V2 = entry.CUE_V2.filter((c) => {
+      if (!c.$) return true;
       // Wenn es ein Grid-Marker ist (TYPE 4), behalten wir ihn immer
       if (c.$.TYPE === '4') return true;
-      // Entferne Hotcues 1, 2, 3, 4
-      if (hc >= 1 && hc <= 4) return false;
+      const hc = parseInt(c.$.HOTCUE, 10);
+      // Entferne Hotcues 0, 1, 2, 3 (entspricht Traktor Hotcue 1-4)
+      if (hc >= 0 && hc <= 3) return false;
       return true;
     });
 

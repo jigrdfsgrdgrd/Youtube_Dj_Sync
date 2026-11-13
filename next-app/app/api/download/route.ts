@@ -1,131 +1,292 @@
 import { NextResponse } from 'next/server';
-import { spawn } from 'child_process';
 import fs from 'fs/promises';
-import fsSync from 'fs';
-import { getConfigPath, buildYtDlpArgs } from '@/lib/yt-dlp-helper';
-import { setActiveProcess, writeStatus, getActiveProcess, cancelDownload } from '@/lib/download-manager';
+import path from 'path';
+import {
+  downloadSingleTarget,
+  extractCleanPlaylistId,
+  getConfigPath,
+  readArchivedIds,
+  resolveUnarchivedPlaylistTracks,
+  runParallelTrackPool,
+} from '@/lib/yt-dlp-helper';
+import {
+  cancelDownload,
+  hasActiveDownload,
+  isDownloadCancelled,
+  setActiveDownloadRun,
+  writeStatus,
+} from '@/lib/download-manager';
+
+interface ConfigShape {
+  youtube_music?: {
+    playlist_ids?: string[];
+    [key: string]: unknown;
+  };
+  downloads?: {
+    destination_path?: string;
+    ffmpeg_path?: string;
+    audio_quality?: string;
+    concurrency?: number;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
 
 export async function POST(req: Request) {
   try {
-    const { url } = await req.json();
-    
-    if (!url) {
+    const body = (await req.json().catch(() => ({}))) as { url?: unknown };
+    const trimmedUrl = typeof body.url === 'string' ? body.url.trim() : '';
+
+    if (!trimmedUrl) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 });
     }
 
-    // Falls bereits ein Download läuft, diesen vorher beenden
-    if (getActiveProcess()) {
+    if (hasActiveDownload()) {
       await cancelDownload();
     }
 
-    // Extract clean Playlist ID (strip &si=... share params)
-    let playlistId = url.trim();
-    try {
-      const urlObj = new URL(playlistId);
-      const listParam = urlObj.searchParams.get('list');
-      if (listParam) playlistId = listParam;
-    } catch {
-      playlistId = playlistId.split(/[&?#]/)[0].trim();
-    }
+    const playlistId = extractCleanPlaylistId(trimmedUrl);
 
-    // Add to config.json and get basePath + ffmpegPath
     const configPath = getConfigPath();
     let basePath = 'C:\\Users\\juliu\\Music\\DJ_Downloads';
     let ffmpegPath: string | undefined;
     let audioQuality = '320';
+    let concurrency = 3;
 
     try {
-      if (fsSync.existsSync(configPath)) {
-        const file = await fs.readFile(configPath, 'utf-8');
-        const configData = JSON.parse(file);
-        
-        if (configData.downloads?.destination_path) {
-          basePath = configData.downloads.destination_path;
-        }
-        if (configData.downloads?.ffmpeg_path) {
-          ffmpegPath = configData.downloads.ffmpeg_path;
-        }
-        if (configData.downloads?.audio_quality) {
-          audioQuality = configData.downloads.audio_quality;
-        }
-        
+      const file = await fs.readFile(configPath, 'utf-8');
+      const configData = JSON.parse(file) as ConfigShape;
+
+      if (configData.downloads?.destination_path) {
+        basePath = configData.downloads.destination_path;
+      }
+      if (configData.downloads?.ffmpeg_path) {
+        ffmpegPath = configData.downloads.ffmpeg_path;
+      }
+      if (configData.downloads?.audio_quality) {
+        audioQuality = configData.downloads.audio_quality;
+      }
+      if (
+        typeof configData.downloads?.concurrency === 'number' &&
+        configData.downloads.concurrency >= 1 &&
+        configData.downloads.concurrency <= 6
+      ) {
+        concurrency = Math.floor(configData.downloads.concurrency);
+      }
+
+      // Only persist valid playlist IDs (never raw single-video watch URLs)
+      if (playlistId) {
         if (!configData.youtube_music) configData.youtube_music = { playlist_ids: [] };
-        if (!configData.youtube_music.playlist_ids) configData.youtube_music.playlist_ids = [];
-        
-        // Check if playlistId is already in config (ignoring &si= suffixes)
+        if (!Array.isArray(configData.youtube_music.playlist_ids)) {
+          configData.youtube_music.playlist_ids = [];
+        }
+
         const alreadyExists = configData.youtube_music.playlist_ids.some(
-          (id: string) => id.split(/[&?#]/)[0] === playlistId
+          (entry) => extractCleanPlaylistId(entry) === playlistId
         );
         if (!alreadyExists) {
           configData.youtube_music.playlist_ids.push(playlistId);
           await fs.writeFile(configPath, JSON.stringify(configData, null, 2));
-          console.log(`Added ${playlistId} to config.json`);
+          console.log(`Added playlist ${playlistId} to config.json`);
         }
       }
-    } catch (err) {
-      console.error('Failed to update config.json:', err);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.error('Failed to read/update config.json:', err);
+      }
     }
 
-    console.log(`Starting 320k CBR DJ download for: ${url}`);
+    setActiveDownloadRun(true);
+    await writeStatus(
+      {
+        status: 'downloading',
+        percentage: 0,
+        eta: '...',
+        videoCurrent: 0,
+        videoTotal: 0,
+        phase: playlistId ? 'Checking playlist...' : 'Starting download...',
+      },
+      { immediate: true }
+    );
 
-    const args = buildYtDlpArgs({
-      basePath,
-      ffmpegPath,
-      audioQuality,
-      urls: [url]
-    });
+    console.log(
+      `Starting ${audioQuality}k CBR DJ download for: ${trimmedUrl} (playlistId=${playlistId ?? 'none'})`
+    );
 
-    const ytDlpProcess = spawn('yt-dlp', args);
-    setActiveProcess(ytDlpProcess);
+    void (async () => {
+      try {
+        if (playlistId) {
+          const archivedIds = await readArchivedIds(path.join(basePath, 'archive.txt'));
+          const resolved = await resolveUnarchivedPlaylistTracks({
+            playlistId,
+            basePath,
+            archivedIds,
+            ffmpegPath,
+          });
 
-    await writeStatus({ status: 'downloading', percentage: 0, eta: '...', videoCurrent: 0, videoTotal: 0 });
+          if (isDownloadCancelled()) return;
 
-    let videoCurrent = 0;
-    let videoTotal = 0;
+          if (!resolved.error) {
+            if (resolved.tracks.length === 0) {
+              await writeStatus(
+                {
+                  status: 'idle',
+                  percentage: 100,
+                  eta: '',
+                  videoCurrent: 0,
+                  videoTotal: 0,
+                },
+                { immediate: true }
+              );
+              return;
+            }
 
-    ytDlpProcess.stdout.on('data', async (data) => {
-      const text = data.toString();
-      console.log(`yt-dlp: ${text.trim()}`);
-      
-      const videoMatch = text.match(/\[download\] Downloading (?:video|item) (\d+) of (\d+)/i);
-      if (videoMatch) {
-        videoCurrent = parseInt(videoMatch[1], 10);
-        videoTotal = parseInt(videoMatch[2], 10);
-      }
-      
-      const match = text.match(/\[download\]\s+(\d+\.?\d*)%.*?ETA\s+([\d:]+)/);
-      if (match) {
-        await writeStatus({
-          status: 'downloading',
-          percentage: parseFloat(match[1]),
-          eta: match[2],
-          videoCurrent,
-          videoTotal
+            const poolResult = await runParallelTrackPool({
+              tracks: resolved.tracks,
+              basePath,
+              ffmpegPath,
+              audioQuality,
+              concurrency,
+            });
+
+            if (poolResult.cancelled || isDownloadCancelled()) return;
+
+            if (poolResult.succeeded === 0 && poolResult.failed > 0) {
+              await writeStatus(
+                {
+                  status: 'error',
+                  percentage: 0,
+                  eta: '',
+                  videoCurrent: 0,
+                  videoTotal: 0,
+                  error: poolResult.errors[0] || 'Download failed',
+                },
+                { immediate: true }
+              );
+              return;
+            }
+
+            await writeStatus(
+              {
+                status: 'idle',
+                percentage: 100,
+                eta: '',
+                videoCurrent: 0,
+                videoTotal: 0,
+              },
+              { immediate: true }
+            );
+            return;
+          }
+
+          console.warn(
+            `Flat playlist resolution failed for ${playlistId} (${resolved.error}); falling back to direct yt-dlp.`
+          );
+        }
+
+        let videoCurrent = 0;
+        let videoTotal = 0;
+        let latestPercentage = 0;
+        let latestEta = '...';
+
+        const singleResult = await downloadSingleTarget({
+          url: trimmedUrl,
+          basePath,
+          ffmpegPath,
+          audioQuality,
+          noPlaylist: !playlistId,
+          callbacks: {
+            onItem: (current, total) => {
+              videoCurrent = current;
+              videoTotal = total;
+            },
+            onProgress: (percentage, eta) => {
+              latestPercentage = percentage;
+              latestEta = eta;
+              void writeStatus({
+                status: 'downloading',
+                percentage,
+                eta,
+                videoCurrent,
+                videoTotal,
+                phase: 'Downloading',
+              });
+            },
+            onPhase: (phase) => {
+              void writeStatus({
+                status: 'downloading',
+                percentage: latestPercentage,
+                eta: latestEta,
+                videoCurrent,
+                videoTotal,
+                phase,
+              });
+            },
+          },
         });
+
+        if (singleResult.cancelled || isDownloadCancelled()) return;
+
+        if (!singleResult.ok) {
+          await writeStatus(
+            {
+              status: 'error',
+              percentage: 0,
+              eta: '',
+              videoCurrent: 0,
+              videoTotal: 0,
+              error: singleResult.error || 'Download failed',
+            },
+            { immediate: true }
+          );
+          return;
+        }
+
+        await writeStatus(
+          {
+            status: 'idle',
+            percentage: 100,
+            eta: '',
+            videoCurrent: 0,
+            videoTotal: 0,
+          },
+          { immediate: true }
+        );
+      } catch (err) {
+        console.error('Background download error:', err);
+        if (!isDownloadCancelled()) {
+          await writeStatus(
+            {
+              status: 'error',
+              percentage: 0,
+              eta: '',
+              videoCurrent: 0,
+              videoTotal: 0,
+              error: err instanceof Error ? err.message : 'Download failed',
+            },
+            { immediate: true }
+          );
+        }
+      } finally {
+        setActiveDownloadRun(false);
       }
-    });
-
-    ytDlpProcess.stderr.on('data', (data) => {
-      console.error(`yt-dlp error: ${data.toString().trim()}`);
-    });
-
-    ytDlpProcess.on('error', async (err) => {
-      console.error('yt-dlp spawn/execution error:', err);
-      setActiveProcess(null);
-      await writeStatus({ status: 'idle', percentage: 0, eta: '', videoCurrent: 0, videoTotal: 0 });
-    });
-
-    ytDlpProcess.on('close', async (code) => {
-      console.log(`yt-dlp process exited with code ${code}`);
-      setActiveProcess(null);
-      await writeStatus({ status: 'idle', percentage: 100, eta: '', videoCurrent: 0, videoTotal: 0 });
-    });
+    })();
 
     return NextResponse.json({ success: true, message: 'Download started in background' });
   } catch (error) {
     console.error('Error starting download:', error);
-    setActiveProcess(null);
-    await writeStatus({ status: 'idle', percentage: 0, eta: '', videoCurrent: 0, videoTotal: 0 });
+    setActiveDownloadRun(false);
+    await writeStatus(
+      {
+        status: 'error',
+        percentage: 0,
+        eta: '',
+        videoCurrent: 0,
+        videoTotal: 0,
+        error: error instanceof Error ? error.message : 'Failed to start download',
+      },
+      { immediate: true }
+    );
     return NextResponse.json({ error: 'Failed to start download' }, { status: 500 });
   }
 }

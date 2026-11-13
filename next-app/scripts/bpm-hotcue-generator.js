@@ -1,8 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import NodeID3 from 'node-id3';
 import { parseStringPromise } from 'xml2js';
 import { serialize } from 'traktor-metadata';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_DEST_PATH = 'C:\\Users\\juliu\\Music\\DJ_Downloads';
 
 // Standardformel für Hotcues (Extended Mixes / Electronic Music)
 // 1 Bar (Takt) = 4 Beats
@@ -15,18 +19,28 @@ const FORMULA = [
 
 const nmlPath = 'C:\\Users\\juliu\\OneDrive\\Dokumente\\Native Instruments\\Traktor 4.5.0\\collection.nml';
 
-// Pfad zur config.json für den Download-Ordner
-const configPath = path.join(process.cwd(), '..', 'spotify-yt-sync', 'config.json');
-let destPath = 'C:\\Users\\juliu\\Music\\DJ_Downloads';
+function resolveConfigPath() {
+  const candidates = [
+    path.join(process.cwd(), 'config.json'),
+    path.join(process.cwd(), '..', 'config.json'),
+    path.resolve(__dirname, '..', 'config.json'),
+    path.resolve(__dirname, '..', '..', 'config.json'),
+    path.join(process.cwd(), '..', 'spotify-yt-sync', 'config.json'),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+let destPath = DEFAULT_DEST_PATH;
 
 try {
-  if (fs.existsSync(configPath)) {
+  const configPath = resolveConfigPath();
+  if (configPath) {
     const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     if (configData.downloads && configData.downloads.destination_path) {
       destPath = path.normalize(configData.downloads.destination_path);
     }
   }
-} catch (e) {
+} catch {
   console.log('Konnte config.json nicht lesen, verwende Standardpfad.');
 }
 
@@ -143,7 +157,7 @@ async function run() {
       } else {
         errorCount++;
       }
-    } catch (e) {
+    } catch {
       errorCount++;
     }
   }
